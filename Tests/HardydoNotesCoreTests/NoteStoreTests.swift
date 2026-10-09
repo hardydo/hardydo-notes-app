@@ -272,6 +272,7 @@ private func legacyStore(in cache: NotesFile) -> NoteStore {
         #expect(store.revision(of: id) > beforeRefresh, "text loaded from disk moves the revision, so the editor shows it")
     }
 
+    @available(macOS 26, *)
     @Test @MainActor func aCheckThatBeganBeforeAnEditLeavesTheEditAlone() async throws {
         let fixture = FileFixture()
         defer { fixture.discard() }
@@ -279,8 +280,8 @@ private func legacyStore(in cache: NotesFile) -> NoteStore {
         let shared = fixture.write("v1", to: "shared.md")
         let id = try store.openFile(shared)
         try? "disk again".write(to: shared, atomically: true, encoding: .utf8)
-        let racing = Task { await store.refreshLocalFiles() }
-        await Task.yield()
+        // Started immediately, the check lists the file before the edit and can only finish after it, however busy the machine is.
+        let racing = Task.immediate { await store.refreshLocalFiles() }
         store.updateBody(id, "typed meanwhile")
         await racing.value
         #expect(store.note(id)?.body == "typed meanwhile", "a check that began before an edit leaves the edit alone")
