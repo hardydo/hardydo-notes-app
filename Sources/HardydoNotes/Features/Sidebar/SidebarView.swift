@@ -35,7 +35,7 @@ private struct SidebarContent: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         if model.globalSearch.isShown {
-                            GlobalSearchResults(search: model.globalSearch, tabs: model.tabs, find: model.find, open: model.openResult).equatable()
+                            GlobalSearchResults(search: model.globalSearch, tabs: model.tabs, find: model.find, open: model.openResult)
                         } else {
                             SidebarList(model: model) { isListFocused = true }
                         }

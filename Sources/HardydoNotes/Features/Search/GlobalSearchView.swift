@@ -50,48 +50,39 @@ struct GlobalSearchField: View {
 
 /// One row per note and per line, so the list only builds the rows that scroll into view.
 /// Reads the selection and the find match itself, so the sidebar around it does not follow them.
-struct GlobalSearchResults: View, Equatable {
+struct GlobalSearchResults: View {
     let search: GlobalSearchModel
     let tabs: TabsModel
     let find: FindModel
     let open: (Note.ID, LineMatch) -> Void
 
-    // The closures are made anew on every render of the parent, but always act on the same models, so those are compared.
-    nonisolated static func == (lhs: GlobalSearchResults, rhs: GlobalSearchResults) -> Bool {
-        MainActor.assumeIsolated { lhs.search === rhs.search && lhs.tabs === rhs.tabs && lhs.find === rhs.find }
-    }
-
-    private enum Row {
-        case note(NoteMatches, isCollapsed: Bool)
-        case line(NoteMatches, LineMatch, isLast: Bool)
-    }
-
     /*
-     Rows are identified by their place in the list: every new query brings other notes and lines, and rows keyed
+     Notes and lines are identified by their place: every new query brings other notes and lines, and rows keyed
      by them were all torn down and built again; keyed by place, the rows already built take the new text.
+     Lines are placed within their note, so folding one note leaves the rows of the others as they are.
      */
     var body: some View {
-        ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-            switch row {
-            case .note(let result, let isCollapsed):
-                ResultHeader(result: result, isCollapsed: isCollapsed) { toggle(result.id) }
-            case .line(let result, let line, let isLast):
-                ResultLine(
-                    line: line,
-                    isCurrent: tabs.selection == result.id && find.current == line.range
-                ) { open(result.id, line) }
-                    .padding(.top, 1)
-                    .padding(.bottom, isLast ? 6 : 0)
+        let collapsed = search.collapsed
+        ForEach(Array(search.results.enumerated()), id: \.offset) { place, result in
+            let isCollapsed = collapsed.contains(result.id)
+            ResultHeader(result: result, isCollapsed: isCollapsed) { toggle(result.id) }
+            if !isCollapsed {
+                ForEach(result.lines.indices.map { LinePlace(note: place, line: $0) }, id: \.self) { slot in
+                    let line = result.lines[slot.line]
+                    ResultLine(
+                        line: line,
+                        isCurrent: tabs.selection == result.id && find.current == line.range
+                    ) { open(result.id, line) }
+                        .padding(.top, 1)
+                        .padding(.bottom, slot.line == result.lines.count - 1 ? 6 : 0)
+                }
             }
         }
     }
 
-    private var rows: [Row] {
-        let collapsed = search.collapsed
-        return search.results.flatMap { result in
-            let isCollapsed = collapsed.contains(result.id)
-            return [Row.note(result, isCollapsed: isCollapsed)] + (isCollapsed ? [] : result.lines.map { Row.line(result, $0, isLast: $0.range == result.lines.last?.range) })
-        }
+    private struct LinePlace: Hashable {
+        let note: Int
+        let line: Int
     }
 
     private func toggle(_ id: Note.ID) {
