@@ -4,6 +4,7 @@ import SwiftUI
 struct TabBar: View, Equatable {
     let tabs: TabsModel
     let actions: TabActions
+    @StateObject private var width = ViewState(CGFloat(0))
 
     // The closures are made anew on every render of the parent, but always act on the same models, so those are compared.
     nonisolated static func == (lhs: TabBar, rhs: TabBar) -> Bool {
@@ -35,7 +36,12 @@ struct TabBar: View, Equatable {
                     }
                 }
                 .coordinateSpace(.named("tabs"))
+                .fixedSize(horizontal: true, vertical: false)
+                // As in VS Code, a double click on the bar beside the tabs opens a new note.
+                .frame(minWidth: width.value, alignment: .leading)
+                .background(Color.clear.contentShape(Rectangle()).onTapGesture(count: 2) { actions.newNote() })
             }
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width.value = $0 }
             .onChange(of: tabs.selection) { _, id in
                 if let id { withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(id) } }
             }

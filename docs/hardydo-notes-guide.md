@@ -159,7 +159,8 @@ sidebar, nhận loại nội dung).
 - **Tab** (giống VS Code): bấm một note trong danh sách để mở ở tab tạm (tên in
   nghiêng); bấm note khác thì tab tạm được thay. Sửa note, nhấp đúp vào note hoặc
   tab, hay ⌘S thì tab được giữ lại. Note mới, file mở từ máy và **Open in New
-  Tab** luôn mở tab riêng. Kéo tab để đổi thứ tự (xem **Kéo thả**). Đóng tab
+  Tab** luôn mở tab riêng. Nhấp đúp vào chỗ trống trên thanh tab (bên phải các
+  tab) để tạo note mới. Kéo tab để đổi thứ tự (xem **Kéo thả**). Đóng tab
   không xoá note. Các
   tab đang mở và tab đã ghim được nhớ cho lần mở app sau.
   - **Đóng tab**: ⌘W, bấm nút giữa chuột vào tab, hoặc nút ✕. Không còn tab thì
@@ -217,7 +218,7 @@ sidebar, nhận loại nội dung).
   mũi tên bên trái) hiện ô thay thế: **Replace** thay chỗ đang chọn rồi sang chỗ
   sau, **Replace All** thay mọi chỗ; ⌘Z hoàn tác. Khi bật regex, ô thay dùng được
   `$1`, `$2`… Đang bôi đen chữ rồi bấm ⌘F thì chữ đó được điền sẵn. Việc tìm chạy
-  ở luồng nền nên gõ không bị khựng; tối đa 10.000 chỗ khớp, và khi bật regex thì
+  ở luồng nền và chỉ chạy khi bạn ngừng gõ một chút, nên gõ không bị khựng; tối đa 10.000 chỗ khớp, và khi bật regex thì
   dòng dài quá 10.000 ký tự được bỏ qua.
 - **Search All Notes** (⇧⌘F, hoặc nút kính lúp cạnh chữ "Notes"): danh sách bên
   trái đổi thành kết quả, nhóm theo note, mỗi dòng có số dòng và đoạn chữ quanh
