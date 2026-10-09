@@ -98,7 +98,7 @@ enum LocalFileDisk {
     }
 
     // Replacing the file keeps its Finder tags, extended attributes and creation date; an in-place write covers folders where that fails.
-    private static func write(_ text: String, encoding: UInt, to url: URL) throws {
+    static func write(_ text: String, encoding: UInt, to url: URL) throws {
         let preferred = String.Encoding(rawValue: encoding)
         guard let data = text.data(using: text.canBeConverted(to: preferred) ? preferred : .utf8) else {
             throw CocoaError(.fileWriteInapplicableStringEncoding)

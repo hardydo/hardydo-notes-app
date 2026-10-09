@@ -66,7 +66,7 @@ struct NoteRow: View {
         .foregroundStyle(.tertiary)
     }
 
-    private static func dateLabel(_ date: Date) -> String {
+    static func dateLabel(_ date: Date) -> String {
         let calendar = Calendar.current
         if calendar.isDateInToday(date) { return date.formatted(date: .omitted, time: .shortened) }
         if calendar.isDateInYesterday(date) { return "Yesterday" }

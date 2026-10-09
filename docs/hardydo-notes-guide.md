@@ -102,7 +102,11 @@ sidebar, nhận loại nội dung).
 
 - **Danh sách note** bên trái có hai phần: **Notes** (note trong app) và
   **Open Files** (file trên máy mở bằng app). Note ghim nằm đầu phần của nó.
-- **Lưu**: app tự lưu sau khi bạn ngừng gõ; ⌘S lưu ngay. Chữ đang gõ được đưa vào
+- **Lưu**: app tự lưu sau khi bạn ngừng gõ, không cần bấm gì. Với file đã mở, ⌘S
+  ghi ngay vào file. Với note trong app, ⌘S hỏi nơi lưu (giống file Untitled của
+  VS Code): lưu xong note thành file trên máy, chuyển xuống **Open Files**, rời
+  nhóm nếu đang ở trong nhóm, và từ đó mọi chỉnh sửa ghi vào file đó. Muốn note
+  ở lại trong app thì đừng bấm ⌘S (hoặc bấm Cancel). Chữ đang gõ được đưa vào
   kho khi bạn dừng tay khoảng 1/4 giây, khi đổi tab, khi chuyển sang app khác và
   khi thoát. Nếu lúc thoát app không ghi được dữ liệu (ổ đầy, thư mục bị khoá…),
   app hỏi **Don’t Quit** hay **Quit Anyway** thay vì thoát luôn.
@@ -128,9 +132,11 @@ sidebar, nhận loại nội dung).
   File mở từ ổ đĩa luôn mang tên file.
 - **Icon file**: tab và breadcrumb chỉ có icon tài liệu khi note là file thật trên
   máy; note tạm trong app không có icon.
-- **Xoá note trống** (nút thùng rác giữa Search và New Note): xoá mọi note trong app
-  hoàn toàn không có chữ (hiện là “Untitled”). Note có dù chỉ một dòng và note
-  đang khoá đều được giữ lại; không khôi phục được.
+- **Xoá note trống** (nút thùng rác giữa Search và New Note): liệt kê các note
+  trong app hoàn toàn không có chữ (hiện là “Untitled”, kèm giờ sửa), mỗi note
+  một ô tick, mở lên là tick hết. Bỏ tick note nào thì note đó được giữ; chỉ các
+  note đã tick bị xoá. Note có dù chỉ một dòng và note đang khoá đều được giữ
+  lại; không khôi phục được.
 - **Chuột phải vào tab** cũng có **Lock (Read-Only)** / **Unlock** và **Rename…**.
 - **Con trỏ gõ chữ** trượt mượt tới vị trí mới (giống tuỳ chọn smooth caret của
   VS Code), đứng yên khi đang di chuyển và nhấp nháy khi dừng.

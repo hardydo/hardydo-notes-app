@@ -393,8 +393,33 @@ private func legacyStore(in cache: NotesFile) -> NoteStore {
         let blank = store.createNote()
         store.updateBody(blank, "  \n\t\n")
         #expect(Set(store.emptyNotes.map(\.id)) == [empty, blank], "only notes without any text count as empty")
-        store.deleteEmptyNotes()
-        #expect(Set(store.notes.map(\.id)) == [id, titled, full, lockedEmpty], "clearing keeps notes with a title line and locked notes")
+        store.deleteEmptyNotes([blank])
+        #expect(store.note(empty) != nil && store.note(blank) == nil, "only the chosen empty notes are deleted")
+        store.updateBody(empty, "typed meanwhile")
+        store.deleteEmptyNotes([empty, titled, full, lockedEmpty])
+        #expect(Set(store.notes.map(\.id)) == [id, empty, titled, full, lockedEmpty], "a chosen note that has text by now, a titled note and locked notes are kept")
+    }
+
+    @Test @MainActor func savingANoteAsAFileKeepsItAsThatFile() throws {
+        let fixture = FileFixture()
+        defer { fixture.discard() }
+        let store = NoteStore(notesFile: fixture.cache)
+        let id = store.createNote()
+        store.updateBody(id, "# Plan\nship it")
+        store.rename(id, to: "Custom")
+        let existing = fixture.write("old text", to: "plan.md")
+        let alreadyOpen = try store.openFile(existing)
+        try store.saveAsFile(id, to: existing)
+        #expect(fixture.read(existing) == "# Plan\nship it", "the note's text is written to the chosen file")
+        #expect(store.note(id)?.title == "plan.md" && store.note(id)?.body == "# Plan\nship it", "the note is now named by its file")
+        #expect(store.localFileNotes.map(\.id) == [id], "the note moves to the opened files, replacing the one already open there")
+        #expect(store.note(alreadyOpen) == nil)
+        store.updateBody(id, "# Plan\nship it today")
+        store.saveNow()
+        #expect(fixture.read(existing) == "# Plan\nship it today", "later edits are written to the same file")
+        #expect(throws: (any Error).self, "a folder that does not exist reports an error") {
+            try store.saveAsFile(store.createNote(), to: fixture.folder.appendingPathComponent("missing/x.md"))
+        }
     }
 
     @Test @MainActor func revisionsCountEditsPerNote() {

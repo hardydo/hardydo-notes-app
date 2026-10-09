@@ -105,10 +105,23 @@ final class AppModel {
         }
     }
 
+    /// A note kept in the app asks where to be saved as a file, like an untitled file in VS Code; an opened file is written in place.
     func save() {
         workspace.controller.commit()
         if let selection = tabs.selection { tabs.keep(selection) }
         store.saveNow()
+        guard let note = workspace.note, note.localFile == nil else { return }
+        let language = workspace.language
+        Task {
+            guard let url = await exporter.chooseFile(for: note, language: language, from: NSApp.keyWindow) else { return }
+            workspace.controller.commit()
+            do {
+                try store.saveAsFile(note.id, to: url)
+                notesRemoved()
+            } catch {
+                dialogs.showAlert("Couldn’t Save", error.localizedDescription)
+            }
+        }
     }
 
     func newNote() {
@@ -166,9 +179,9 @@ final class AppModel {
         store.rename(id, to: dialogs.renameText)
     }
 
-    func confirmClearEmptyNotes() {
+    func confirmClearEmptyNotes(_ chosen: Set<Note.ID>) {
         dialogs.isClearingEmptyNotes = false
-        store.deleteEmptyNotes()
+        store.deleteEmptyNotes(chosen)
         notesRemoved()
     }
 

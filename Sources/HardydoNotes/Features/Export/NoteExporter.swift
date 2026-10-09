@@ -75,6 +75,20 @@ final class NoteExporter: NSObject {
         }
     }
 
+    /// Asks where a note kept in the app should live as a file of its own type; nil when the panel is cancelled.
+    func chooseFile(for note: Note, language: ContentLanguage, from window: NSWindow?) async -> URL? {
+        guard panel == nil, pdf == nil else { return nil }
+        let panel = NSSavePanel()
+        self.panel = panel
+        defer { self.panel = nil }
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.allowedContentTypes = [ExportFormat.source.type(language)]
+        panel.nameFieldStringValue = Self.baseName(of: note)
+        let response = if let window { await panel.beginSheetModal(for: window) } else { panel.runModal() }
+        return response == .OK ? panel.url : nil
+    }
+
     @objc private func formatChanged(_ sender: NSPopUpButton) {
         guard let panel, let format = ExportFormat(rawValue: sender.indexOfSelectedItem) else { return }
         panel.allowedContentTypes = [format.type(language)]

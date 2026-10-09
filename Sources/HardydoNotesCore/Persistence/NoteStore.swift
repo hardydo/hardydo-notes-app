@@ -283,8 +283,9 @@ public final class NoteStore {
         notes.contains { $0.localFile == nil && !$0.isLocked && $0.body.allSatisfy(\.isWhitespace) }
     }
 
-    public func deleteEmptyNotes() {
-        let empty = Set(emptyNotes.map(\.id))
+    /// Only the chosen notes that are still empty go, so one typed into meanwhile is kept.
+    public func deleteEmptyNotes(_ chosen: Set<Note.ID>) {
+        let empty = Set(emptyNotes.map(\.id)).intersection(chosen)
         guard !empty.isEmpty else { return }
         notes.removeAll { empty.contains($0.id) }
         persist()
@@ -306,6 +307,22 @@ public final class NoteStore {
             return
         }
         notes.remove(at: index)
+        persist()
+    }
+
+    /*
+     Writes a note kept in the app to `url` and keeps it as that file from then on, as VS Code does when an
+     untitled file is saved. A note already open for that file is closed, since the file now holds this text.
+     */
+    public func saveAsFile(_ id: Note.ID, to url: URL) throws {
+        guard let body = note(id).flatMap({ $0.localFile == nil ? $0.body : nil }) else { return }
+        waitForFileWrites()
+        try LocalFileDisk.write(body, encoding: String.Encoding.utf8.rawValue, to: url)
+        let url = url.standardizedFileURL.resolvingSymlinksInPath()
+        notes.removeAll { $0.localFile?.path == url.path }
+        guard let index = self.index(of: id) else { return }
+        notes[index].customTitle = nil
+        notes[index].localFile = LocalFile(path: url.path, bookmark: try? url.bookmarkData(), stamp: LocalFileDisk.stamp(url))
         persist()
     }
 

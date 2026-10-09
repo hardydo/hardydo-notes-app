@@ -33,10 +33,10 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: Bindable(dialogs).isClearingEmptyNotes) {
-            DeleteConfirmation(heading: "Delete empty notes?", message: emptyNotesMessage) {
+            EmptyNotesConfirmation(notes: store.emptyNotes) {
                 dialogs.isClearingEmptyNotes = false
-            } onDelete: {
-                model.confirmClearEmptyNotes()
+            } onDelete: { chosen in
+                model.confirmClearEmptyNotes(chosen)
             }
         }
         .alert("Rename Note", isPresented: Binding(
@@ -77,12 +77,6 @@ struct ContentView: View {
         } message: {
             Text(model.storageProblem ?? "")
         }
-    }
-
-    private var emptyNotesMessage: String {
-        let count = store.emptyNotes.count
-        let notes = count == 1 ? "1 note has" : "\(count) notes have"
-        return "\(notes) no text at all and will be removed from this Mac. Notes with any text, and locked notes, are kept. This can’t be undone."
     }
 }
 

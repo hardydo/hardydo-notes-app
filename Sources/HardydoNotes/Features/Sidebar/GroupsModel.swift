@@ -37,7 +37,8 @@ final class GroupsModel {
     }
 
     func prune() {
-        let existing = Set(store.notes.map(\.id))
+        // Opened files cannot be grouped, so a note saved as a file leaves its group too.
+        let existing = Set(store.notes.lazy.filter { $0.localFile == nil }.map(\.id))
         var pruned = list
         pruned.prune(keeping: existing)
         guard pruned != list else { return }
