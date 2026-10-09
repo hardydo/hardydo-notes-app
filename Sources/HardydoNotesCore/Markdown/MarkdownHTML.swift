@@ -200,7 +200,7 @@ public enum MarkdownHTML {
     ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
     ::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.4); border: 2.5px solid transparent; background-clip: padding-box; }
     .markdown-body {
-      box-sizing: border-box; margin: 0; padding: 20px 29px 64px 55px;
+      box-sizing: border-box; margin: 0; padding: 20px 29px 64px 49px;
       color: var(--fg); font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
       word-wrap: break-word;
     }

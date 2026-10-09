@@ -51,10 +51,10 @@ enum SyntaxTheme {
 }
 
 enum EditorTheme {
-    static let foldColumn: CGFloat = 14
+    static let foldColumn: CGFloat = 12
     static let lineHeight: CGFloat = 27
     private static let gutterLead: CGFloat = 10
-    static let numberGap: CGFloat = 9
+    static let numberGap: CGFloat = 5
 
     static func numberFont(_ zoom: CGFloat) -> NSFont {
         .monospacedDigitSystemFont(ofSize: 12 * zoom, weight: .regular)

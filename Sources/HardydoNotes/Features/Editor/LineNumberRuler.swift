@@ -123,7 +123,7 @@ final class LineNumberRuler: NSRulerView {
     // Symbol images are slow to build, and every scroll redraws the gutter, so they are made once per zoom.
     private func chevron(folded: Bool) -> NSImage? {
         if chevrons?.zoom != zoom {
-            let configuration = NSImage.SymbolConfiguration(pointSize: 8.5 * zoom, weight: .bold)
+            let configuration = NSImage.SymbolConfiguration(pointSize: 7.5 * zoom, weight: .bold)
                 .applying(NSImage.SymbolConfiguration(paletteColors: [NSColor.labelColor.withAlphaComponent(0.7)]))
             chevrons = (
                 zoom,
