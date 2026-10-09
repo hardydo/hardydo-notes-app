@@ -17,16 +17,13 @@ extension AppModel {
         editor.focus()
     }
 
-    /// Open tabs come first when nothing is typed, as recently used notes do in VS Code.
-    func quickOpenNotes(matching query: String) -> [Note] {
-        let open = tabList.ids.compactMap(store.note)
-        let openIDs = Set(open.map(\.id))
-        let candidates = open + (groups.orderedNotes(store.appNotes) + store.localFileNotes).filter { !openIDs.contains($0.id) }
-        return FuzzyMatch.rank(candidates, query: query) { $0.title }
+    func quickOpenNotes(matching query: String) -> [NoteSummary] {
+        let listed = (groups.orderedNotes(store.appNotes) + store.localFileNotes).map(\.summary)
+        return FuzzyMatch.rank(QuickOpenRanking.candidates(openTabs: tabList.ids, listed: listed), query: query) { $0.title }
     }
 
     var selectedLineCount: Int {
         guard let note = selectedNote else { return 0 }
-        return CodeFolding.lineStarts(note.body as NSString).count
+        return editor.lineCount ?? LineIndex(note.body as NSString).count
     }
 }

@@ -4,43 +4,56 @@ import SwiftUI
 import WebKit
 
 struct PreviewView: NSViewRepresentable {
-    let text: String
+    let text: NoteText
     let language: ContentLanguage
     let zoom: CGFloat
+    let syncsScroll: Bool
+    let model: AppModel
 
     /// The page's own background, drawn behind the web view so nothing else shows while it catches up.
     static let pageBackground = Color(red: 13 / 255, green: 17 / 255, blue: 23 / 255)
 
     func makeNSView(context: Context) -> WKWebView {
-        PreviewPage.shared.attach()
+        model.previewPage().attach()
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         if webView.pageZoom != zoom { webView.pageZoom = zoom }
-        PreviewPage.shared.show(text, language: language)
+        let page = model.previewPage()
+        page.syncsScroll = syncsScroll
+        page.show(text, language: language)
     }
 }
 
 /*
- One page for the whole app: showing the preview again reuses the loaded page rather than starting WebKit over,
- which flashed on every switch to Split or Preview. A page shown again stays hidden until it holds the current note.
+ One page for the whole window, made the first time a preview shows: showing the preview again reuses the loaded
+ page rather than starting WebKit over, which flashed on every switch. A page shown again stays hidden until it
+ holds the current note.
  */
 @MainActor
 final class PreviewPage: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
-    static let shared = PreviewPage()
+    private struct Shown: Equatable {
+        var text: NoteText?
+        var language: ContentLanguage
+    }
 
     let webView = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
-    private var latest = (text: "", language: ContentLanguage.markdown)
-    private var rendered: (text: String, language: ContentLanguage)?
+    private var latest = Shown(text: nil, language: .markdown)
+    /// What the page holds, or is being given.
+    private var rendered: Shown?
     private var isReady = false
     private var isRevealing = false
     private var renderTask: Task<Void, Never>?
+    private var buildTask: Task<Void, Never>?
     /// The line at the top of the page, each time the reader scrolls it.
     var onScroll: (Double) -> Void = { _ in }
     /// Called whenever the page shows the current note, so a synced scroll can line it up again.
     var onShow: () -> Void = {}
+    var syncsScroll = false {
+        didSet { if syncsScroll != oldValue { sendScrollSync() } }
+    }
 
-    override private init() {
+    override init() {
         super.init()
         webView.configuration.userContentController.add(self, name: "ready")
         webView.configuration.userContentController.add(self, name: "scroll")
@@ -54,9 +67,10 @@ final class PreviewPage: NSObject, WKNavigationDelegate, WKScriptMessageHandler 
         return webView
     }
 
-    func show(_ text: String, language: ContentLanguage) {
-        guard text != latest.text || language != latest.language || rendered == nil || isRevealing else { return }
-        latest = (text, language)
+    func show(_ text: NoteText, language: ContentLanguage) {
+        let next = Shown(text: text, language: language)
+        guard next != latest || rendered == nil || isRevealing else { return }
+        latest = next
         if rendered == nil {
             load()
         } else if isReady, isRevealing {
@@ -69,7 +83,7 @@ final class PreviewPage: NSObject, WKNavigationDelegate, WKScriptMessageHandler 
     private func load() {
         isReady = false
         rendered = latest
-        webView.loadHTMLString(MarkdownHTML.page(latest.text, language: latest.language, sourceLines: true), baseURL: nil)
+        build(latest, page: true) { [weak self] html in self?.webView.loadHTMLString(html, baseURL: nil) }
     }
 
     // Typing in split view sends a change per keystroke; rendering once they pause keeps the editor responsive.
@@ -84,11 +98,29 @@ final class PreviewPage: NSObject, WKNavigationDelegate, WKScriptMessageHandler 
 
     private func render() {
         renderTask?.cancel()
-        guard rendered?.text != latest.text || rendered?.language != latest.language else { return reveal() }
+        guard rendered != latest else {
+            if buildTask == nil { reveal() }
+            return
+        }
         rendered = latest
-        let html = MarkdownHTML.content(latest.text, language: latest.language, sourceLines: true)
-        webView.callAsyncJavaScript("render(html)", arguments: ["html": html], in: nil, in: .page) { [weak self] _ in
-            self?.reveal()
+        build(latest, page: false) { [weak self] html in
+            self?.webView.callAsyncJavaScript("render(html)", arguments: ["html": html], in: nil, in: .page) { _ in self?.reveal() }
+        }
+    }
+
+    // Converting a long note takes tens of milliseconds, so it happens off the main thread and a newer note drops it.
+    private func build(_ shown: Shown, page: Bool, apply: @escaping (String) -> Void) {
+        buildTask?.cancel()
+        let string = shown.text?.string ?? "", language = shown.language
+        buildTask = Task { [weak self] in
+            let html = await Task.detached(priority: .userInitiated) {
+                page
+                    ? MarkdownHTML.page(string, language: language, sourceLines: true, highlightLimit: MarkdownHTML.previewHighlightLimit)
+                    : MarkdownHTML.content(string, language: language, sourceLines: true, highlightLimit: MarkdownHTML.previewHighlightLimit)
+            }.value
+            guard let self, !Task.isCancelled else { return }
+            buildTask = nil
+            apply(html)
         }
     }
 
@@ -97,6 +129,11 @@ final class PreviewPage: NSObject, WKNavigationDelegate, WKScriptMessageHandler 
         guard isRevealing else { return }
         isRevealing = false
         webView.alphaValue = 1
+    }
+
+    private func sendScrollSync() {
+        guard isReady else { return }
+        webView.callAsyncJavaScript("setScrollSync(on)", arguments: ["on": syncsScroll], in: nil, in: .page)
     }
 
     func scroll(toLine line: Double) {
@@ -110,6 +147,7 @@ final class PreviewPage: NSObject, WKNavigationDelegate, WKScriptMessageHandler 
             return
         }
         isReady = true
+        sendScrollSync()
         render()
     }
 

@@ -127,8 +127,8 @@ public enum MarkdownFormatting {
         return TextEdit(range: range, replacement: replacement, selection: selectionAfter)
     }
 
-    private static let existingPrefix = try! NSRegularExpression(
-        pattern: #"^(#{1,6}[ \t]+|>[ \t]?|[ \t]*[-*+][ \t]+\[[ xX]\][ \t]+|[ \t]*[-*+][ \t]+|[ \t]*\d+[.)][ \t]+)"#
+    private static let existingPrefix = regex(
+        #"^(#{1,6}[ \t]+|>[ \t]?|[ \t]*[-*+][ \t]+\[[ xX]\][ \t]+|[ \t]*[-*+][ \t]+|[ \t]*\d+[.)][ \t]+)"#
     )
 
     private static func split(_ line: String) -> (prefix: String, content: String) {

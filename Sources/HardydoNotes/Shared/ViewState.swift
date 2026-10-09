@@ -9,3 +9,13 @@ final class ViewState<Value>: ObservableObject {
         self.value = value
     }
 }
+
+/// Like `ViewState`, but only the views that read `value` redraw when it changes, not the view that owns it.
+@Observable
+final class ObservedState<Value>: ObservableObject {
+    var value: Value
+
+    init(_ value: Value) {
+        self.value = value
+    }
+}

@@ -2,12 +2,9 @@ import AppKit
 import HardydoNotesCore
 
 extension AppModel {
-    private static let tabsKey = "openTabs"
-    private static let pinnedTabsKey = "pinnedTabs"
-    private static let activeTabKey = "activeTab"
 
     var selection: Note.ID? { tabList.active }
-    var previewTab: Note.ID? { tabList.preview }
+    var transientTab: Note.ID? { tabList.transient }
 
     var tabs: [Note] {
         tabList.ids.compactMap(store.note)
@@ -20,11 +17,18 @@ extension AppModel {
         guard updated != tabList else { return }
         if updated.active != before {
             editor.commit()
-            findCurrent = nil
+            find.current = nil
             editor.pendingReveal = nil
         }
         tabList = updated
-        saveTabs()
+        editor.keepSessions(for: updated.ids)
+        keepLanguages(for: Set(updated.ids))
+        tabSaveTask?.cancel()
+        tabSaveTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            self?.saveTabs()
+        }
     }
 
     func activate(_ id: Note.ID) {
@@ -36,7 +40,7 @@ extension AppModel {
     }
 
     func keepTab(_ id: Note.ID) {
-        guard tabList.preview == id else { return }
+        guard tabList.transient == id else { return }
         changeTabs { $0.keep(id) }
     }
 
@@ -95,7 +99,6 @@ extension AppModel {
         changeTabs { $0.cycle(by: offset) }
     }
 
-    /// Notes can vanish under open tabs (deleted, or a file closed), so their tabs go too.
     func pruneTabs() {
         let existing = Set(store.notes.map(\.id))
         changeTabs { $0.prune(keeping: existing) }
@@ -112,15 +115,17 @@ extension AppModel {
     }
 
     func saveTabs() {
-        defaults.set(tabList.ids.map(\.uuidString), forKey: Self.tabsKey)
-        defaults.set(tabList.pinned.map(\.uuidString), forKey: Self.pinnedTabsKey)
-        defaults.set(tabList.active?.uuidString, forKey: Self.activeTabKey)
+        tabSaveTask?.cancel()
+        guard persistsSidebarState else { return }
+        preferences.openTabs = tabList.ids
+        preferences.pinnedTabs = Array(tabList.pinned)
+        preferences.activeTab = tabList.active
     }
 
     func restoreTabs() {
-        let saved = (defaults.stringArray(forKey: Self.tabsKey) ?? []).compactMap(UUID.init).filter { store.note($0) != nil }
-        let pinned = Set((defaults.stringArray(forKey: Self.pinnedTabsKey) ?? []).compactMap(UUID.init))
-        let active = defaults.string(forKey: Self.activeTabKey).flatMap(UUID.init)
+        let saved = preferences.openTabs.filter { store.note($0) != nil }
+        let pinned = Set(preferences.pinnedTabs)
+        let active = preferences.activeTab
         tabList = TabList(ids: saved, active: active, pinned: pinned)
     }
 }

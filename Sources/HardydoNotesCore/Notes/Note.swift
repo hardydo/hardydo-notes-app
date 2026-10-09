@@ -56,13 +56,13 @@ public struct Note: Identifiable, Codable, Equatable, Sendable {
     }
 
     public var fileName: String {
-        localFile.map { URL(fileURLWithPath: $0.path).lastPathComponent } ?? NoteNaming.fileName(forTitle: title)
+        localFile?.name ?? NoteNaming.fileName(forTitle: title)
     }
 
     private mutating func refreshSummary() {
         let summary = NoteNaming.summary(of: body)
         if let localFile {
-            title = URL(fileURLWithPath: localFile.path).lastPathComponent
+            title = localFile.name
             snippet = summary.firstLine
         } else if let customTitle {
             title = customTitle
@@ -74,7 +74,44 @@ public struct Note: Identifiable, Codable, Equatable, Sendable {
     }
 
     public var language: ContentLanguage {
-        ContentLanguage.detect(body, fileName: localFile.map { URL(fileURLWithPath: $0.path).lastPathComponent })
+        ContentLanguage.detect(body, fileName: localFile?.name)
+    }
+}
+
+/// What lists show for a note, without its text, so comparing rows never scans a long body.
+public struct NoteSummary: Identifiable, Equatable, Sendable {
+    public let id: UUID
+    public let title: String
+    public let snippet: String
+    public let modifiedAt: Date
+    public let isPinned: Bool
+    public let isLocked: Bool
+    public let filePath: String?
+}
+
+extension Note {
+    public var summary: NoteSummary {
+        NoteSummary(id: id, title: title, snippet: snippet, modifiedAt: modifiedAt, isPinned: isPinned, isLocked: isLocked, filePath: localFile?.path)
+    }
+}
+
+/*
+ A note's text with the revision it belongs to. SwiftUI compares view inputs with ==, so equality looks only at
+ the note and the revision; comparing the text itself scanned megabytes after every pause in typing.
+ */
+public struct NoteText: Equatable, Sendable {
+    public let note: Note.ID
+    public let revision: Int
+    public let string: String
+
+    public init(note: Note.ID, revision: Int, string: String) {
+        self.note = note
+        self.revision = revision
+        self.string = string
+    }
+
+    public static func == (lhs: NoteText, rhs: NoteText) -> Bool {
+        lhs.note == rhs.note && lhs.revision == rhs.revision
     }
 }
 
@@ -94,6 +131,8 @@ public struct LocalFile: Codable, Equatable, Sendable {
     public var stamp: FileStamp?
     public var encoding: UInt
     public var needsSave: Bool
+
+    public var name: String { URL(fileURLWithPath: path).lastPathComponent }
 
     public init(path: String, bookmark: Data? = nil, stamp: FileStamp? = nil, encoding: UInt = String.Encoding.utf8.rawValue, needsSave: Bool = false) {
         self.path = path

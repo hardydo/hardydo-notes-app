@@ -1,18 +1,31 @@
 import HardydoNotesCore
 import SwiftUI
 
+/*
+ The toolbar itself never reads the open note: SwiftUI rebuilds every NSToolbarItem whenever this content
+ changes, so the parts that follow the note live in the two views below and update on their own.
+ */
 struct WorkspaceToolbar: ToolbarContent {
-    @Bindable var model: AppModel
+    let model: AppModel
 
     var body: some ToolbarContent {
-        ToolbarItemGroup(placement: .principal) {
+        ToolbarItem(placement: .principal) { PrincipalTools(model: model) }
+        ToolbarItem(placement: .primaryAction) { ActionTools(model: model) }
+    }
+}
+
+private struct PrincipalTools: View {
+    @Bindable var model: AppModel
+
+    var body: some View {
+        HStack(spacing: 10) {
             if model.selection != nil {
                 ModeSwitcher(mode: $model.viewMode)
                     .help("Editor ⌥⌘1 · Split ⌥⌘2 · Preview ⌥⌘3 · Toggle Preview ⇧⌘V")
                 if model.viewMode == .split {
                     Button { model.toggleScrollSync() } label: { Image(systemName: "arrow.up.arrow.down") }
-                        .buttonStyle(.toolbarToggle(isOn: model.isScrollSynced))
-                        .help(model.isScrollSynced ? "Sync Scroll is on: the editor and the preview scroll together" : "Sync Scroll is off: scroll the editor and the preview separately")
+                        .buttonStyle(.toolbarToggle(isOn: model.layout.isScrollSynced))
+                        .help(model.layout.isScrollSynced ? "Sync Scroll is on: the editor and the preview scroll together" : "Sync Scroll is off: scroll the editor and the preview separately")
                 }
                 if model.viewMode != .preview, model.selectedLanguage == .markdown {
                     FormatBar(editor: model.editor) { model.isInsertingTable = true }
@@ -20,7 +33,14 @@ struct WorkspaceToolbar: ToolbarContent {
                 }
             }
         }
-        ToolbarItemGroup(placement: .primaryAction) {
+    }
+}
+
+private struct ActionTools: View {
+    let model: AppModel
+
+    var body: some View {
+        HStack(spacing: 8) {
             if model.selectedNote != nil, model.viewMode != .preview, model.selectedLanguage != .markdown {
                 LanguageBadge(language: model.selectedLanguage)
             }
@@ -37,12 +57,12 @@ struct WorkspaceToolbar: ToolbarContent {
                 .buttonStyle(.toolbarIcon)
                 .help(model.viewMode == .preview ? "Switch to Editor or Split to format JSON" : "Re-indent the JSON, keeping its order (⇧⌥F)")
             }
-            if let note = model.selectedNote {
+            if let isLocked = model.selectedNote?.isLocked {
                 Button { model.toggleLock() } label: {
-                    Image(systemName: note.isLocked ? "lock.fill" : "lock.open")
+                    Image(systemName: isLocked ? "lock.fill" : "lock.open")
                 }
                 .buttonStyle(.toolbarIcon)
-                .help(note.isLocked ? "This note is locked (read-only). Click to unlock (⌥⌘L)" : "Lock the note to make it read-only (⌥⌘L)")
+                .help(isLocked ? "This note is locked (read-only). Click to unlock (⌥⌘L)" : "Lock the note to make it read-only (⌥⌘L)")
             }
             Button { model.newNote() } label: { Image(systemName: "square.and.pencil") }
                 .buttonStyle(.toolbarIcon)

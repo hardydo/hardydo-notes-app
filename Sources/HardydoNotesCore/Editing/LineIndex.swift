@@ -10,6 +10,29 @@ public struct LineIndex: Equatable, Sendable {
 
     public var count: Int { starts.count }
 
+    /// 0-based line holding `location`.
+    public func line(at location: Int) -> Int {
+        lineNumber(at: location) - 1
+    }
+
+    /// Where the 0-based line's text ends, before its line break.
+    public func contentsEnd(ofLine line: Int, in text: NSString) -> Int {
+        guard line + 1 < starts.count else { return text.length }
+        let end = starts[line + 1]
+        guard end > starts[line] else { return end }
+        if text.character(at: end - 1) == 10, end - 2 >= starts[line], text.character(at: end - 2) == 13 { return end - 2 }
+        return end - 1
+    }
+
+    /// The longest line in UTF-16 units, line break included.
+    public func maxLineLength(textLength: Int) -> Int {
+        var longest = 0
+        for index in starts.indices {
+            longest = max(longest, (index + 1 < starts.count ? starts[index + 1] : textLength) - starts[index])
+        }
+        return longest
+    }
+
     /// 1-based number of the line holding `location`.
     public func lineNumber(at location: Int) -> Int {
         var low = 0
@@ -23,10 +46,12 @@ public struct LineIndex: Equatable, Sendable {
 
     /*
      `edited` is the changed range in the new text and `delta` the change in length, as NSTextStorage reports
-     them. Only the lines around the edit are rescanned; one extra character on each side covers a CR LF pair
-     split or joined by the edit.
+     them; returns how many lines the edit added, negative when it removed some. Only the lines around the edit
+     are rescanned; one extra character on each side covers a CR LF pair split or joined by the edit.
      */
-    public mutating func update(_ text: NSString, edited: NSRange, delta: Int) {
+    @discardableResult
+    public mutating func update(_ text: NSString, edited: NSRange, delta: Int) -> Int {
+        let oldCount = starts.count
         let oldEnd = NSMaxRange(edited) - delta
         let first = max(lineNumber(at: max(edited.location - 1, 0)) - 1, 0)
         var tail = starts.count
@@ -35,6 +60,7 @@ public struct LineIndex: Equatable, Sendable {
         let scanEnd = min(kept.first.map { $0 - 1 } ?? text.length, text.length)
         let middle = Self.breaks(in: text, from: starts[first], to: max(scanEnd, starts[first])).filter { $0 < (kept.first ?? .max) }
         starts = Array(starts[...first]) + middle + kept
+        return starts.count - oldCount
     }
 
     private static func breaks(in text: NSString, from start: Int, to end: Int) -> [Int] {

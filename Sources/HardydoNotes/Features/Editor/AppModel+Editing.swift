@@ -7,7 +7,12 @@ extension AppModel {
     }
 
     var canFormatMarkdown: Bool {
-        selectedNote?.isLocked == false && viewMode != .preview && selectedLanguage == .markdown
+        canEditText && selectedLanguage == .markdown
+    }
+
+    /// Preview mode has no editor, so anything that edits or reveals text switches to a mode that shows one.
+    func leavePreview(to mode: ViewMode) {
+        if viewMode == .preview { viewMode = mode }
     }
 
     func moveLines(_ direction: LineEditing.Direction) {

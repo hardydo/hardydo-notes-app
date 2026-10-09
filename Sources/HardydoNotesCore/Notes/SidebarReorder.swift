@@ -3,7 +3,7 @@ import Foundation
 /// One line of the sidebar: a group header, or a note with the group it is listed under.
 public enum SidebarRow: Identifiable, Equatable, Sendable {
     case header(NoteGroup)
-    case note(Note, group: NoteGroup?)
+    case note(NoteSummary, group: NoteGroup?)
 
     public var id: UUID {
         switch self {
@@ -25,8 +25,11 @@ private enum RowKey: Equatable {
     case note(Note.ID, NoteGroup.ID?)
 }
 
-/// Where a dragged row or group can land, and what the notes and groups become if it lands there.
-public struct SidebarReorderPlan: Sendable {
+/*
+ Where a dragged row or group can land, and what the notes and groups become if it lands there. Each landing place
+ costs a pass over the whole list, so places are worked out only when the drag reaches them, and remembered.
+ */
+public final class SidebarReorderPlan {
     public struct Result: Equatable, Sendable {
         public let order: [Note.ID]
         public let groups: NoteGroups
@@ -34,14 +37,46 @@ public struct SidebarReorderPlan: Sendable {
 
     public let rows: [UUID]
     public let block: [UUID]
-    /// Keyed by the insertion index among the rows left once the block is lifted out.
-    public let slots: [Int: Result]
-    /// The gaps at the end of an open group, where a note in the upper half joins the group and one in the lower half stays out.
-    public let upperSlots: [Int: Result]
     /// Collapsed groups the dragged note can be dropped onto.
     public let into: Set<NoteGroup.ID>
     /// A group's last note starts in the upper half of its own gap, so lifting it does not take it out of the group.
     public let startsUpper: Bool
+    /// Insertion indexes among the rows left once the block is lifted out run from 0 to `slotCount - 1`.
+    public let slotCount: Int
+    private let lanes: (Int) -> (lower: NoteGroup.ID?, upper: NoteGroup.ID?)
+    private let compute: (Int, NoteGroup.ID?) -> Result?
+    private var memo: [Int: Result?] = [:]
+    private var upperMemo: [Int: Result?] = [:]
+
+    init(
+        rows: [UUID], block: [UUID], into: Set<NoteGroup.ID>, startsUpper: Bool, slotCount: Int,
+        lanes: @escaping (Int) -> (lower: NoteGroup.ID?, upper: NoteGroup.ID?), compute: @escaping (Int, NoteGroup.ID?) -> Result?
+    ) {
+        self.rows = rows
+        self.block = block
+        self.into = into
+        self.startsUpper = startsUpper
+        self.slotCount = slotCount
+        self.lanes = lanes
+        self.compute = compute
+    }
+
+    /// The gaps at the end of an open group have two halves: a note in the upper half joins the group, one in the lower half stays out.
+    public func hasUpperHalf(at index: Int) -> Bool {
+        guard (0..<slotCount).contains(index) else { return false }
+        let lanes = lanes(index)
+        return lanes.upper != lanes.lower
+    }
+
+    /// What dropping at `index` gives, or nil when the sidebar would not list the result as it was shown while dragging.
+    public func result(at index: Int, upper: Bool) -> Result? {
+        guard (0..<slotCount).contains(index), !upper || hasUpperHalf(at: index) else { return nil }
+        if let known = upper ? upperMemo[index] : memo[index] { return known }
+        let lanes = lanes(index)
+        let result = compute(index, upper ? lanes.upper : lanes.lower)
+        if upper { upperMemo[index] = result } else { memo[index] = result }
+        return result
+    }
 }
 
 extension NoteGroups {
@@ -49,9 +84,9 @@ extension NoteGroups {
         entries(for: notes).flatMap { entry -> [SidebarRow] in
             switch entry {
             case .note(let note):
-                [.note(note, group: nil)]
+                [.note(note.summary, group: nil)]
             case .group(let group, let members):
-                [.header(group)] + (group.isCollapsed ? [] : members.map { .note($0, group: group) })
+                [.header(group)] + (group.isCollapsed ? [] : members.map { .note($0.summary, group: group) })
             }
         }
     }
@@ -64,29 +99,38 @@ extension NoteGroups {
         let rows = rows(for: notes)
         guard let start = rows.firstIndex(where: { $0.id == id }) else { return nil }
         var end = start + 1
-        var movingNote: (note: Note, group: NoteGroup.ID?)?
+        var movingNote: (id: Note.ID, group: NoteGroup.ID?)?
         switch rows[start] {
         case .header(let group):
             while end < rows.count, case .note(_, let member) = rows[end], member?.id == group.id { end += 1 }
         case .note(let note, let group):
-            movingNote = (note, group?.id)
+            movingNote = (note.id, group?.id)
         }
         let block = Array(rows[start..<end])
         var remaining = rows
         remaining.removeSubrange(start..<end)
         let byID = Dictionary(notes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var hidden: [NoteGroup.ID: [Note.ID]] = [:]
+        for note in notes where note.id != id {
+            if let group = group(of: note.id), group.isCollapsed { hidden[group.id, default: []].append(note.id) }
+        }
 
         func result(at index: Int, joining target: NoteGroup.ID?) -> SidebarReorderPlan.Result? {
             var updated = self
             var shown = block.map(\.key)
             if let movingNote {
                 if target != movingNote.group {
-                    if let target { updated.add(movingNote.note.id, to: target) } else { updated.remove(movingNote.note.id) }
+                    if let target { updated.add(movingNote.id, to: target) } else { updated.remove(movingNote.id) }
                 }
-                shown = [.note(movingNote.note.id, target)]
+                shown = [.note(movingNote.id, target)]
             }
             let layout = remaining[..<index].map(\.key) + shown + remaining[index...].map(\.key)
-            let order = flatten(layout, notes: notes, excluding: id)
+            let order = layout.flatMap { key -> [Note.ID] in
+                switch key {
+                case .note(let note, _): [note]
+                case .header(let group): hidden[group] ?? []
+                }
+            }
             let sorted = order.compactMap { byID[$0] }
             let listed = updated.rows(for: sorted.filter(\.isPinned) + sorted.filter { !$0.isPinned }).map(\.key)
             let expected = layout.filter { key in
@@ -94,14 +138,6 @@ extension NoteGroups {
                 return true
             }
             return listed == expected ? .init(order: order, groups: updated) : nil
-        }
-
-        var slots: [Int: SidebarReorderPlan.Result] = [:]
-        var upperSlots: [Int: SidebarReorderPlan.Result] = [:]
-        for index in 0...remaining.count {
-            let lanes = movingNote == nil ? (lower: nil, upper: nil) : Self.lanes(at: index, in: remaining)
-            slots[index] = result(at: index, joining: lanes.lower)
-            if lanes.upper != lanes.lower { upperSlots[index] = result(at: index, joining: lanes.upper) }
         }
 
         var into: Set<NoteGroup.ID> = []
@@ -113,13 +149,18 @@ extension NoteGroups {
             let own = Self.lanes(at: start, in: remaining)
             startsUpper = own.upper != own.lower && own.upper == movingNote.group
         }
+        let isNote = movingNote != nil
         return SidebarReorderPlan(
-            rows: rows.map(\.id), block: block.map(\.id), slots: slots, upperSlots: upperSlots, into: into, startsUpper: startsUpper
+            rows: rows.map(\.id), block: block.map(\.id), into: into, startsUpper: startsUpper, slotCount: remaining.count + 1,
+            lanes: { isNote ? Self.lanes(at: $0, in: remaining) : (nil, nil) },
+            compute: result
         )
     }
 
-    /// The group a note dropped at `index` joins: under an open group's header or between two of its notes it joins;
-    /// in the gap at a group's end only the upper half joins.
+    /*
+     The group a note dropped at `index` joins: under an open group's header or between two of its notes it joins;
+     in the gap at a group's end only the upper half joins.
+     */
     private static func lanes(at index: Int, in rows: [SidebarRow]) -> (lower: NoteGroup.ID?, upper: NoteGroup.ID?) {
         let next = index < rows.count ? rows[index] : nil
         switch index > 0 ? rows[index - 1] : nil {
@@ -131,18 +172,6 @@ extension NoteGroups {
             return (nil, group.id)
         default:
             return (nil, nil)
-        }
-    }
-
-    private func flatten(_ layout: [RowKey], notes: [Note], excluding id: UUID) -> [Note.ID] {
-        layout.flatMap { key -> [Note.ID] in
-            switch key {
-            case .note(let note, _):
-                return [note]
-            case .header(let groupID):
-                guard group(groupID)?.isCollapsed == true else { return [] }
-                return notes.filter { $0.id != id && group(of: $0.id)?.id == groupID }.map(\.id)
-            }
         }
     }
 }

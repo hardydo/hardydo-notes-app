@@ -1,38 +1,50 @@
-import HardydoNotesCore
 import Foundation
+import HardydoNotesCore
 
-private func temporaryCache() -> NoteCache {
-    NoteCache(url: FileManager.default.temporaryDirectory.appendingPathComponent("hardydo-notes-checks-\(UUID().uuidString).json"))
+func runTrashPathChecks() {
+    check(NoteStore.isInTrash("/Users/me/.Trash/note.md"), "a file in the user Trash is in the Trash")
+    check(NoteStore.isInTrash("/Volumes/Disk/.Trashes/501/note.md"), "a file in a volume Trash is in the Trash")
+    check(!NoteStore.isInTrash("/Users/me/Notes/.Trash-notes/note.md"), "a folder only named like the Trash is not")
+    check(!NoteStore.isInTrash("/Users/me/Notes/note.md"), "a regular file is not in the Trash")
+}
+
+let checksFolder = FileManager.default.temporaryDirectory.appendingPathComponent("hardydo-notes-checks-\(UUID().uuidString)")
+
+/// Each in its own folder, since a save also leaves the previous version beside the file.
+func temporaryNotesFile() -> NotesFile {
+    let folder = checksFolder.appendingPathComponent(UUID().uuidString)
+    try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    return NotesFile(url: folder.appendingPathComponent("notes.json"))
 }
 
 @MainActor
 func runStoreChecks() async {
-    let cache = temporaryCache()
-    defer { try? FileManager.default.removeItem(at: cache.url) }
-    let store = NoteStore(cache: cache)
+    let cache = temporaryNotesFile()
+    defer { try? FileManager.default.removeItem(at: cache.url.deletingLastPathComponent()) }
+    let store = NoteStore(notesFile: cache)
     let id = store.createNote()
     store.updateBody(id, "# Groceries\nmilk")
     store.updateBody(id, "# Groceries\nmilk\nbread")
     try? await Task.sleep(for: .milliseconds(600))
-    checkEqual(NoteStore(cache: cache).note(id)?.body, "# Groceries\nmilk\nbread", "edits are saved shortly after typing")
+    checkEqual(NoteStore(notesFile: cache).note(id)?.body, "# Groceries\nmilk\nbread", "edits are saved shortly after typing")
 
     let other = store.createNote()
     store.updateBody(other, "# Other")
     store.saveNow()
-    checkEqual(NoteStore(cache: cache).notes.map(\.title), ["Other", "Groceries"], "save now writes every note")
+    checkEqual(NoteStore(notesFile: cache).notes.map(\.title), ["Other", "Groceries"], "save now writes every note")
 
     store.delete(id)
     check(store.note(id) == nil, "delete removes the note")
-    checkEqual(NoteStore(cache: cache).notes.map(\.id), [other], "deleting is saved")
+    checkEqual(NoteStore(notesFile: cache).notes.map(\.id), [other], "deleting is saved")
     store.close(other)
     check(store.note(other) != nil, "closing applies only to opened files")
 }
 
 @MainActor
 func runLockChecks() async {
-    let cache = temporaryCache()
-    defer { try? FileManager.default.removeItem(at: cache.url) }
-    let store = NoteStore(cache: cache)
+    let cache = temporaryNotesFile()
+    defer { try? FileManager.default.removeItem(at: cache.url.deletingLastPathComponent()) }
+    let store = NoteStore(notesFile: cache)
     let id = store.createNote()
     store.updateBody(id, "# Locked\noriginal")
     store.setLocked(id, true)
@@ -40,42 +52,19 @@ func runLockChecks() async {
     checkEqual(store.note(id)?.body, "# Locked\noriginal", "locked note cannot be edited")
     store.delete(id)
     check(store.note(id) != nil, "locked note cannot be deleted")
-    checkEqual(NoteStore(cache: cache).note(id)?.isLocked, true, "lock is saved locally")
+    checkEqual(NoteStore(notesFile: cache).note(id)?.isLocked, true, "lock is saved locally")
     store.setLocked(id, false)
     store.updateBody(id, "# Locked\nchanged")
     checkEqual(store.note(id)?.body, "# Locked\nchanged", "unlocked note can be edited")
 }
 
-func runCacheCompatibilityChecks() {
-    let cache = temporaryCache()
-    defer { try? FileManager.default.removeItem(at: cache.url) }
-    let legacy = ##"{"notes":[{"id":"6F1C3E2A-1B2C-4D5E-8F90-123456789ABC","body":"# Old","modifiedAt":781500000}]}"##
-    try? FileManager.default.createDirectory(at: cache.url.deletingLastPathComponent(), withIntermediateDirectories: true)
-    try? Data(legacy.utf8).write(to: cache.url)
-    let snapshot = cache.load()
-    checkEqual(snapshot.notes.map(\.body), ["# Old"], "cache without lock field still loads")
-    checkEqual(snapshot.notes.first?.isLocked, false, "missing lock field means unlocked")
-
-    let perNote = ##"{"notes":[{"id":"6F1C3E2A-1B2C-4D5E-8F90-123456789ABD","body":"# Zoomed","modifiedAt":781500000,"splitRatio":0.4,"zoom":1.5}]}"##
-    try? Data(perNote.utf8).write(to: cache.url)
-    checkEqual(cache.load().notes.map(\.body), ["# Zoomed"], "cache with old per-note zoom and split still loads")
-
-    try? Data("not json".utf8).write(to: cache.url)
-    _ = cache.load()
-    let folder = cache.url.deletingLastPathComponent()
-    let prefix = cache.url.deletingPathExtension().lastPathComponent + ".unreadable-"
-    let backups = (try? FileManager.default.contentsOfDirectory(atPath: folder.path))?.filter { $0.hasPrefix(prefix) } ?? []
-    checkEqual(backups.count, 1, "unreadable cache is backed up")
-    backups.forEach { try? FileManager.default.removeItem(at: folder.appendingPathComponent($0)) }
-}
-
 @MainActor
 func runOrderAndFileChecks() async {
-    let cache = temporaryCache()
+    let cache = temporaryNotesFile()
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent("hardydo-notes-files-\(UUID().uuidString)")
     try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
     defer {
-        try? FileManager.default.removeItem(at: cache.url)
+        try? FileManager.default.removeItem(at: cache.url.deletingLastPathComponent())
         try? FileManager.default.removeItem(at: folder)
     }
 
@@ -83,7 +72,7 @@ func runOrderAndFileChecks() async {
     let newer = Note(body: "# Newer", modifiedAt: Date(timeIntervalSince1970: 2_000))
     let legacy = ##"{"notes":[\##(String(decoding: try! JSONEncoder().encode(older), as: UTF8.self)),\##(String(decoding: try! JSONEncoder().encode(newer), as: UTF8.self))]}"##
     try? Data(legacy.utf8).write(to: cache.url)
-    let store = NoteStore(cache: cache)
+    let store = NoteStore(notesFile: cache)
     checkEqual(store.notes.map(\.title), ["Newer", "Older"], "old cache keeps newest-first order")
 
     let fresh = store.createNote()
@@ -93,7 +82,7 @@ func runOrderAndFileChecks() async {
     store.move(fromOffsets: [1], toOffset: 0)
     checkEqual(store.notes.map(\.title), ["Older", "Newer", NoteNaming.untitled], "dragging up moves it up")
     store.saveNow()
-    checkEqual(NoteStore(cache: cache).notes.map(\.title), ["Older", "Newer", NoteNaming.untitled], "custom order is saved")
+    checkEqual(NoteStore(notesFile: cache).notes.map(\.title), ["Older", "Newer", NoteNaming.untitled], "custom order is saved")
 
     let url = folder.appendingPathComponent("todo.txt")
     try? "buy milk\ncall mom".write(to: url, atomically: true, encoding: .utf8)
@@ -108,11 +97,23 @@ func runOrderAndFileChecks() async {
     store.updateBody(opened!, "buy milk\ncall mom\npay rent")
     store.saveNow()
     checkEqual(try? String(contentsOf: url, encoding: .utf8), "buy milk\ncall mom\npay rent", "edits are written to the file")
+    store.updateBody(opened!, "buy milk\ncall mom\npay rent\nwater plants")
+    try? await Task.sleep(for: .milliseconds(800))
+    checkEqual(try? String(contentsOf: url, encoding: .utf8), "buy milk\ncall mom\npay rent\nwater plants", "edits reach the file shortly after typing, written off the main thread")
+    check(store.note(opened!)?.localFile?.needsSave == false, "a finished background write clears the pending flag")
+    store.updateBody(opened!, "buy milk\ncall mom\npay rent")
+    store.saveNow()
 
     try? "changed elsewhere".write(to: url, atomically: true, encoding: .utf8)
     _ = try? store.openFile(url)
     checkEqual(store.note(opened!)?.body, "changed elsewhere", "reopening picks up changes made outside the app")
-    checkEqual(NoteStore(cache: cache).note(opened!)?.body, "changed elsewhere", "file content is reloaded on launch")
+    try? "changed while closed".write(to: url, atomically: true, encoding: .utf8)
+    let relaunched = NoteStore(notesFile: cache)
+    checkEqual(relaunched.note(opened!)?.body, "changed elsewhere", "launch shows the saved text before checking files")
+    await relaunched.refreshLocalFiles()
+    checkEqual(relaunched.note(opened!)?.body, "changed while closed", "file content is reloaded after launch")
+    try? "changed elsewhere".write(to: url, atomically: true, encoding: .utf8)
+    _ = try? store.openFile(url)
 
     store.delete(opened!)
     check(store.note(opened!) != nil, "delete does not remove a file note")
@@ -126,14 +127,14 @@ func runOrderAndFileChecks() async {
 
 @MainActor
 func runFileSafetyChecks() async {
-    let cache = temporaryCache()
+    let cache = temporaryNotesFile()
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent("hardydo-notes-safety-\(UUID().uuidString)")
     try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
     defer {
-        try? FileManager.default.removeItem(at: cache.url)
+        try? FileManager.default.removeItem(at: cache.url.deletingLastPathComponent())
         try? FileManager.default.removeItem(at: folder)
     }
-    let store = NoteStore(cache: cache)
+    let store = NoteStore(notesFile: cache)
     func read(_ url: URL) -> String? { try? String(contentsOf: url, encoding: .utf8) }
 
     var shared = folder.appendingPathComponent("shared.md")
@@ -163,9 +164,23 @@ func runFileSafetyChecks() async {
     checkEqual(store.note(id)?.body, "disk wins", "using the disk version replaces the app text")
     check(store.note(id)?.localFile?.needsSave == false, "using the disk version clears pending edits")
 
+    let beforeRefresh = store.revision(of: id)
     try? "refreshed".write(to: shared, atomically: true, encoding: .utf8)
-    store.refreshLocalFiles()
+    await store.refreshLocalFiles()
     checkEqual(store.note(id)?.body, "refreshed", "outside changes load when the app becomes active")
+    check(store.revision(of: id) > beforeRefresh, "text loaded from disk moves the revision, so the editor shows it")
+
+    try? "disk again".write(to: shared, atomically: true, encoding: .utf8)
+    let racing = Task { await store.refreshLocalFiles() }
+    await Task.yield()
+    store.updateBody(id, "typed meanwhile")
+    await racing.value
+    checkEqual(store.note(id)?.body, "typed meanwhile", "a check that began before an edit leaves the edit alone")
+    await store.refreshLocalFiles()
+    checkEqual(store.fileConflict?.id, id, "the next check reports the outside change as a conflict with the unsaved edit")
+    store.resolveFileConflict(keepAppVersion: true)
+    store.saveNow()
+    checkEqual(read(shared), "typed meanwhile", "keeping the app version after a check writes it")
 
     let missing = folder.appendingPathComponent("gone.txt")
     try? "x".write(to: missing, atomically: true, encoding: .utf8)
@@ -196,51 +211,10 @@ func runFileSafetyChecks() async {
 }
 
 @MainActor
-func runSearchChecks() async {
-    func ranges(_ query: String, _ text: String, _ options: SearchOptions = SearchOptions()) -> [String] {
-        guard let expression = try? TextSearch.expression(for: query, options: options) else { return ["<invalid>"] }
-        return TextSearch.matches(of: expression, in: text).map { (text as NSString).substring(with: $0) }
-    }
-    checkEqual(ranges("note", "Note note NOTE"), ["Note", "note", "NOTE"], "search ignores case by default")
-    checkEqual(ranges("note", "Note note", SearchOptions(caseSensitive: true)), ["note"], "case-sensitive search")
-    checkEqual(ranges("cat", "cat concat cat_ (cat)", SearchOptions(wholeWord: true)), ["cat", "cat"], "whole word skips parts of words")
-    checkEqual(ranges("c++", "c++ and c++x", SearchOptions(wholeWord: true)), ["c++"], "whole word works next to punctuation")
-    checkEqual(ranges("café", "Café time, cafés", SearchOptions(wholeWord: true)), ["Café"], "whole word understands accented letters")
-    checkEqual(ranges("a.c", "abc a.c"), ["a.c"], "plain search treats symbols literally")
-    checkEqual(ranges("a.c", "abc a.c", SearchOptions(regex: true)), ["abc", "a.c"], "regex search")
-    checkEqual(ranges("^- ", "- one\n- two\nx - three", SearchOptions(regex: true)), ["- ", "- "], "regex anchors match each line")
-    checkEqual(ranges("x*", "aaa", SearchOptions(regex: true)), [], "empty regex matches are skipped")
-    checkEqual(ranges("(", "(", SearchOptions(regex: true)), ["<invalid>"], "bad regex is reported")
-    check((try? TextSearch.expression(for: "", options: SearchOptions())) == .some(nil), "empty query searches nothing")
-
-    let text = "intro\r\n  find me here\n\nlast find"
-    let expression = try! TextSearch.expression(for: "find", options: SearchOptions())!
-    let lines = TextSearch.lineMatches(of: expression, in: text, limit: 10)
-    checkEqual(lines.map(\.line), [2, 4], "line numbers count every kind of line break")
-    checkEqual(lines.first.map { [$0.before, $0.matched, $0.after] }, ["", "find", " me here"], "line snippet splits around the match")
-    checkEqual(lines.last.map { [$0.before, $0.after] }, ["last ", ""], "line snippet at the end of the text")
-    checkEqual(TextSearch.lineMatches(of: expression, in: text, limit: 1).count, 1, "line matches respect the limit")
-
-    let regex = try! TextSearch.expression(for: "(\\w+)@(\\w+)", options: SearchOptions(regex: true))!
-    let mail = "mail a@b now"
-    let range = TextSearch.matches(of: regex, in: mail)[0]
-    checkEqual(TextSearch.replacement(for: range, in: mail, expression: regex, template: "$2 at $1", options: SearchOptions(regex: true)), "b at a", "regex replace uses groups")
-    let literal = try! TextSearch.expression(for: "cost", options: SearchOptions())!
-    let price = "cost: cost"
-    checkEqual(TextSearch.replacement(for: TextSearch.matches(of: literal, in: price)[1], in: price, expression: literal, template: "$5", options: SearchOptions()), "$5", "plain replace inserts text as typed")
-    checkEqual(TextSearch.replacement(for: NSRange(location: 1, length: 3), in: price, expression: literal, template: "x", options: SearchOptions()), nil, "stale range is not replaced")
-    let all = TextSearch.replacingAll(in: "a-b-c", expression: try! TextSearch.expression(for: "-", options: SearchOptions())!, template: "+", options: SearchOptions())
-    check(all.text == "a+b+c" && all.count == 2, "replace all")
-    let word = try! TextSearch.expression(for: "cat", options: SearchOptions(wholeWord: true))!
-    let pets = "concat cat"
-    checkEqual(TextSearch.replacement(for: NSRange(location: 7, length: 3), in: pets, expression: word, template: "dog", options: SearchOptions(wholeWord: true)), "dog", "single replace sees the text around the match")
-}
-
-@MainActor
 func runPinChecks() async {
-    let cache = temporaryCache()
-    defer { try? FileManager.default.removeItem(at: cache.url) }
-    let store = NoteStore(cache: cache)
+    let cache = temporaryNotesFile()
+    defer { try? FileManager.default.removeItem(at: cache.url.deletingLastPathComponent()) }
+    let store = NoteStore(notesFile: cache)
     let first = store.createNote()
     let second = store.createNote()
     let third = store.createNote()
@@ -250,23 +224,23 @@ func runPinChecks() async {
     let newest = store.createNote()
     checkEqual(store.appNotes.first, store.note(first), "new notes go below pinned ones")
     store.saveNow()
-    checkEqual(NoteStore(cache: cache).appNotes.map(\.id), [first, newest, third, second], "pins survive a restart")
+    checkEqual(NoteStore(notesFile: cache).appNotes.map(\.id), [first, newest, third, second], "pins survive a restart")
     store.setPinned(first, false)
     checkEqual(store.appNotes.map(\.id), [newest, third, second, first], "unpinned note returns to its place")
 }
 
 @MainActor
 func runRenameChecks() {
-    let cache = temporaryCache()
-    defer { try? FileManager.default.removeItem(at: cache.url) }
-    let store = NoteStore(cache: cache)
+    let cache = temporaryNotesFile()
+    defer { try? FileManager.default.removeItem(at: cache.url.deletingLastPathComponent()) }
+    let store = NoteStore(notesFile: cache)
     let id = store.createNote()
     store.updateBody(id, "first line\nsecond")
     store.rename(id, to: "  My name  ")
     checkEqual(store.note(id)?.title, "My name", "a renamed note shows its trimmed name")
     checkEqual(store.note(id)?.snippet, "first line", "a renamed note previews its first line")
     checkEqual(store.note(id)?.fileName, "My name.md", "exports take the given name")
-    checkEqual(NoteStore(cache: cache).note(id)?.title, "My name", "the name is saved")
+    checkEqual(NoteStore(notesFile: cache).note(id)?.title, "My name", "the name is saved")
     store.rename(id, to: " ")
     checkEqual(store.note(id)?.title, "first line", "an empty name goes back to the first line")
     store.setLocked(id, true)
@@ -288,4 +262,29 @@ func runRenameChecks() {
     checkEqual(Set(store.emptyNotes.map(\.id)), [empty, blank], "only notes without any text count as empty")
     store.deleteEmptyNotes()
     checkEqual(Set(store.notes.map(\.id)), [id, titled, full, lockedEmpty], "clearing keeps notes with a title line and locked notes")
+}
+
+/// Saves still debounced when a check returns land later, so the folder is removed once every queued write is done.
+func removeChecksFolder() {
+    NotesFile(url: checksFolder).flush()
+    try? FileManager.default.removeItem(at: checksFolder)
+}
+
+@MainActor
+func runRevisionChecks() {
+    let cache = temporaryNotesFile()
+    defer { try? FileManager.default.removeItem(at: cache.url.deletingLastPathComponent()) }
+    let store = NoteStore(notesFile: cache)
+    let first = store.createNote()
+    let second = store.createNote()
+    checkEqual(store.revision(of: first), 0, "a new note starts at revision zero")
+    let edited = store.updateBody(first, "# One")
+    check(edited != nil && edited == store.revision(of: first), "an edit returns the note's new revision")
+    check(store.updateBody(first, "# One") == nil, "the same text is not an edit")
+    checkEqual(store.revision(of: first), edited, "the same text leaves the revision alone")
+    check(store.updateBody(first, "# Two") != nil, "same-length new text is still an edit")
+    let other = store.updateBody(second, "# Other")
+    check(other != nil && other! > store.revision(of: first), "revisions never repeat across notes")
+    store.setLocked(first, true)
+    check(store.updateBody(first, "# Locked") == nil, "a locked note does not take edits")
 }

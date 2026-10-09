@@ -31,15 +31,19 @@ public enum MarkdownHTML {
             .replacingOccurrences(of: ">", with: "&gt;")
     }
 
+    /// Code longer than this shows uncoloured: highlight.js would freeze the page for seconds on it.
+    public static let exportHighlightLimit = 500_000
+    /// The live preview recolours a note on every pause in typing, so it gives up much sooner than an export.
+    public static let previewHighlightLimit = 100_000
+
     /// Markdown renders as a page; code shows as one highlighted block and plain text as it is typed.
-    public static func content(_ text: String, language: ContentLanguage = .markdown, sourceLines: Bool = false) -> String {
+    public static func content(_ text: String, language: ContentLanguage = .markdown, sourceLines: Bool = false, highlightLimit: Int = exportHighlightLimit) -> String {
         if language == .markdown {
             return body(text, sourceLines: sourceLines).replacingOccurrences(of: #" disabled="""#, with: "")
         }
         let lines = text.reduce(into: 1) { count, character in if character.isNewline { count += 1 } }
         let source = sourceLines ? " data-sourcepos=\"1:1-\(lines):1\"" : ""
-        // highlight.js would freeze the preview for seconds on very long code, so it shows uncoloured.
-        if language == .plainText || text.utf16.count > 500_000 {
+        if language == .plainText || text.utf16.count > highlightLimit {
             return "<pre class=\"plain\"\(source)>" + escape(text) + "</pre>"
         }
         return "<pre\(source)><code class=\"language-\(language.highlightName ?? "plaintext")\">" + escape(text) + "</code></pre>"
@@ -61,7 +65,7 @@ public enum MarkdownHTML {
         public static let bundled = Bundle.main.resourceURL.flatMap { Highlighter(directory: $0.appending(path: "highlight")) }
     }
 
-    public static func page(_ text: String, title: String? = nil, language: ContentLanguage = .markdown, sourceLines: Bool = false, highlighter: Highlighter? = .bundled) -> String {
+    public static func page(_ text: String, title: String? = nil, language: ContentLanguage = .markdown, sourceLines: Bool = false, highlightLimit: Int = exportHighlightLimit, highlighter: Highlighter? = .bundled) -> String {
         """
         <!doctype html>
         <html>
@@ -70,7 +74,7 @@ public enum MarkdownHTML {
         <style>\(stylesheet)</style>\(highlighter.map { "\n<style media=\"screen\">" + $0.darkTheme + "</style>\n<style media=\"print\">" + $0.lightTheme + "</style>" } ?? "")
         </head>
         <body>
-        <article id="content" class="markdown-body">\(content(text, language: language, sourceLines: sourceLines))</article>\(highlighter.map { "\n<script>" + $0.script + "</script>" } ?? "")
+        <article id="content" class="markdown-body">\(content(text, language: language, sourceLines: sourceLines, highlightLimit: highlightLimit))</article>\(highlighter.map { "\n<script>" + $0.script + "</script>" } ?? "")
         <script>\(script)</script>
         </body>
         </html>
@@ -103,6 +107,7 @@ public enum MarkdownHTML {
       while (content.childNodes.length > nodes.length) content.removeChild(content.lastChild);
       source.length = nodes.length;
       highlight();
+      measured = null;
     }
     source = Array.prototype.map.call(document.getElementById('content').childNodes, markup);
     highlight();
@@ -110,9 +115,11 @@ public enum MarkdownHTML {
      Lines are 1-based and fractional: 12.5 is halfway down line 12. Each top-level block knows the lines it came
      from, so a line maps into its block by proportion, and a line between two blocks into the gap between them.
      */
+    var measured = null;
     function blocks() {
+      if (measured) return measured;
       var scrollTop = document.scrollingElement.scrollTop;
-      return Array.prototype.filter.call(document.getElementById('content').children, function (el) {
+      return measured = Array.prototype.filter.call(document.getElementById('content').children, function (el) {
         return el.dataset.sourcepos;
       }).map(function (el) {
         var lines = el.dataset.sourcepos.split('-');
@@ -123,35 +130,49 @@ public enum MarkdownHTML {
     function between(value, from, to, outFrom, outTo) {
       return to > from ? outFrom + (value - from) / (to - from) * (outTo - outFrom) : outFrom;
     }
-    function offsetOfLine(line) {
-      var list = blocks(), previous = { end: 1, bottom: 0 };
-      for (var i = 0; i < list.length; i++) {
-        var block = list[i];
-        if (line < block.start) return between(line, previous.end, block.start, previous.bottom, block.top);
-        if (line < block.end) return between(line, block.start, block.end, block.top, block.bottom);
-        previous = block;
+    // Blocks run down the page in source order, so both their ends and their bottoms only ever grow.
+    function firstPast(list, key, value) {
+      var low = 0, high = list.length;
+      while (low < high) {
+        var middle = (low + high) >> 1;
+        if (list[middle][key] > value) high = middle; else low = middle + 1;
       }
-      return previous.bottom;
+      return low;
+    }
+    function offsetOfLine(line) {
+      var list = blocks(), i = firstPast(list, 'end', line);
+      var previous = i > 0 ? list[i - 1] : { end: 1, bottom: 0 };
+      if (i === list.length) return previous.bottom;
+      var block = list[i];
+      if (line < block.start) return between(line, previous.end, block.start, previous.bottom, block.top);
+      return between(line, block.start, block.end, block.top, block.bottom);
     }
     function lineAtOffset(offset) {
-      var list = blocks(), previous = { end: 1, bottom: 0 };
-      for (var i = 0; i < list.length; i++) {
-        var block = list[i];
-        if (offset < block.top) return between(offset, previous.bottom, block.top, previous.end, block.start);
-        if (offset < block.bottom) return between(offset, block.top, block.bottom, block.start, block.end);
-        previous = block;
-      }
-      return previous.end;
+      var list = blocks(), i = firstPast(list, 'bottom', offset);
+      var previous = i > 0 ? list[i - 1] : { end: 1, bottom: 0 };
+      if (i === list.length) return previous.end;
+      var block = list[i];
+      if (offset < block.top) return between(offset, previous.bottom, block.top, previous.end, block.start);
+      return between(offset, block.top, block.bottom, block.start, block.end);
     }
+    // Images loading, fonts settling and the window resizing all move blocks after a render.
+    new ResizeObserver(function () { measured = null; }).observe(document.getElementById('content'));
     // A scroll the editor asked for must not echo back to it as the reader's own.
     var followingUntil = 0;
     function scrollToLine(line) {
       followingUntil = Date.now() + 150;
       document.scrollingElement.scrollTop = offsetOfLine(line);
     }
+    var isSyncing = false, isScrollQueued = false;
+    function setScrollSync(on) { isSyncing = on; }
     window.addEventListener('scroll', function () {
-      if (Date.now() < followingUntil || !window.webkit || !window.webkit.messageHandlers.scroll) return;
-      window.webkit.messageHandlers.scroll.postMessage(lineAtOffset(document.scrollingElement.scrollTop));
+      if (!isSyncing || isScrollQueued || !window.webkit || !window.webkit.messageHandlers.scroll) return;
+      isScrollQueued = true;
+      requestAnimationFrame(function () {
+        isScrollQueued = false;
+        if (!isSyncing || Date.now() < followingUntil) return;
+        window.webkit.messageHandlers.scroll.postMessage(lineAtOffset(document.scrollingElement.scrollTop));
+      });
     }, { passive: true });
     if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ready) {
       window.webkit.messageHandlers.ready.postMessage(true);

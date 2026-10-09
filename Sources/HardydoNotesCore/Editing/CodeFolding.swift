@@ -11,18 +11,6 @@ public struct FoldRegion: Equatable, Sendable {
     }
 }
 
-public struct MarkdownHeading: Equatable, Sendable {
-    public let line: Int
-    public let level: Int
-    public let title: String
-
-    public init(line: Int, level: Int, title: String) {
-        self.line = line
-        self.level = level
-        self.title = title
-    }
-}
-
 /*
  Ports VS Code's folding providers: the TypeScript/JSON/CSS syntax ranges for C-like languages, the Markdown
  language service for notes, and the indentation provider with `#region` markers for everything else.
@@ -44,45 +32,42 @@ public enum CodeFolding {
         return sanitize(found)
     }
 
-    public static func lineStarts(_ text: NSString) -> [Int] {
-        var starts = [0]
-        var index = 0
-        while index < text.length {
-            let line = text.lineRange(for: NSRange(location: index, length: 0))
-            index = NSMaxRange(line)
-            if index < text.length || (index == text.length && line.length > 0 && isNewline(text.character(at: index - 1))) {
-                starts.append(index)
+    /*
+     Moves fold regions past an edit of the old lines `first...last` that added `lineDelta` lines. Regions above
+     stay, those below move, one enclosing the edit stretches, and any starting or ending on an edited line is
+     dropped until the next full pass finds it again.
+     */
+    public static func shiftRegions(_ regions: [Int: Int], editedLines first: Int, through last: Int, lineDelta: Int) -> [Int: Int] {
+        var shifted: [Int: Int] = [:]
+        for (start, end) in regions {
+            if end < first {
+                shifted[start] = end
+            } else if start > last {
+                shifted[start + lineDelta] = end + lineDelta
+            } else if start < first, end > last {
+                shifted[start] = end + lineDelta
             }
         }
-        return starts
+        return shifted
     }
 
     private static func isNewline(_ c: unichar) -> Bool {
         c == 10 || c == 13 || c == 0x85 || c == 0x2028 || c == 0x2029
     }
 
-    public static func line(of location: Int, in starts: [Int]) -> Int {
-        var low = 0
-        var high = starts.count
-        while low < high {
-            let mid = (low + high) / 2
-            if starts[mid] <= location { low = mid + 1 } else { high = mid }
-        }
-        return low - 1
-    }
-
-    private struct Lines {
+    struct Lines {
         let text: NSString
-        let starts: [Int]
+        private let lineIndex: LineIndex
 
         init(text: NSString) {
             self.text = text
-            starts = CodeFolding.lineStarts(text)
+            lineIndex = LineIndex(text)
         }
 
-        var count: Int { starts.count }
+        var starts: [Int] { lineIndex.starts }
+        var count: Int { lineIndex.count }
 
-        func line(of location: Int) -> Int { CodeFolding.line(of: location, in: starts) }
+        func line(of location: Int) -> Int { lineIndex.line(at: location) }
 
         func content(_ line: Int) -> String {
             var end = line + 1 < starts.count ? starts[line + 1] : text.length
@@ -108,10 +93,6 @@ public enum CodeFolding {
         }
 
         func isBlank(_ line: Int) -> Bool { indent(line) == nil }
-    }
-
-    private static func regex(_ pattern: String) -> NSRegularExpression {
-        try! NSRegularExpression(pattern: pattern)
     }
 
     private static func match(_ regex: NSRegularExpression, _ text: String) -> NSTextCheckingResult? {
@@ -380,14 +361,14 @@ public enum CodeFolding {
         [listItem, atxHeading, fenceOpen, blockquote, thematicBreak, htmlBlock].contains { match($0, text) != nil }
     }
 
-    private struct MarkdownBlocks {
+    struct MarkdownBlocks {
         var inFence: [Bool]
         var fences: [(start: Int, end: Int)] = []
         var tables: [(start: Int, end: Int)] = []
         var headings: [MarkdownHeading] = []
     }
 
-    private static func markdownBlocks(_ lines: Lines, _ contents: [String]) -> MarkdownBlocks {
+    static func markdownBlocks(_ lines: Lines, _ contents: [String]) -> MarkdownBlocks {
         var blocks = MarkdownBlocks(inFence: [Bool](repeating: false, count: lines.count))
         var fenceStart: (line: Int, marker: String)?
         for line in contents.indices {
@@ -438,23 +419,6 @@ public enum CodeFolding {
             title = (title as NSString).substring(to: found.range.location)
         }
         return title.trimmingCharacters(in: .whitespaces)
-    }
-
-    /// Markdown headings outside code fences and tables, in document order.
-    public static func markdownHeadings(in text: String) -> [MarkdownHeading] {
-        let lines = Lines(text: text as NSString)
-        return markdownBlocks(lines, (0..<lines.count).map(lines.content)).headings
-    }
-
-    /// The headings that enclose `line`, outermost first, the way VS Code's breadcrumbs nest document symbols.
-    public static func headingPath(_ headings: [MarkdownHeading], toLine line: Int) -> [MarkdownHeading] {
-        var path: [MarkdownHeading] = []
-        for heading in headings {
-            guard heading.line <= line else { break }
-            while let last = path.last, last.level >= heading.level { path.removeLast() }
-            path.append(heading)
-        }
-        return path
     }
 
     /*

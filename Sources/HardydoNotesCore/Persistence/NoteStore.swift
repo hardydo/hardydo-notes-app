@@ -21,29 +21,81 @@ public enum FileOpenError: LocalizedError, Equatable {
 @MainActor
 @Observable
 public final class NoteStore {
-    public private(set) var notes: [Note] = []
+    public private(set) var notes: [Note] = [] {
+        didSet { changeCount &+= 1 }
+    }
     public private(set) var fileConflict: FileConflict?
+    /// Moves on with every change to the list or to any note, so work that reads them all knows when to run again.
+    public private(set) var changeCount = 0
     public private(set) var fileError: String?
+    /// False when the notes file was damaged, so whatever is kept beside it (groups, tabs) must not be pruned against this list.
+    @ObservationIgnored public private(set) var loadedCleanly = true
 
-    @ObservationIgnored private let cache: NoteCache
+    @ObservationIgnored private var notesFile: NotesFile
     @ObservationIgnored private var cacheTask: Task<Void, Never>?
     @ObservationIgnored private var failedFileWrites: Set<Note.ID> = []
-    @ObservationIgnored private var keepsUnreadableFile = false
-    private static let maxFileSize = 5_000_000
+    @ObservationIgnored private var revisions: [Note.ID: Int] = [:]
+    @ObservationIgnored private var lastRevision = 0
+    @ObservationIgnored private var savedCount: Int? = 0
+    /// Every read and write of opened files, in order, so a check never runs while the store's own write is half done.
+    @ObservationIgnored private let diskQueue = DispatchQueue(label: "com.hardydo.notes.files", qos: .userInitiated)
+    @ObservationIgnored private let finishedWrites = FileWriteInbox()
+    @ObservationIgnored private var writing: Set<Note.ID> = []
 
-    public init(cache: NoteCache) {
-        self.cache = cache
-        let snapshot = cache.load()
-        // Caches from before manual ordering kept notes in creation order and showed them newest first.
+    public init(notesFile: NotesFile) {
+        self.notesFile = notesFile
+        let snapshot = notesFile.load()
+        // Notes files from before manual ordering kept notes in creation order and showed them newest first.
         notes = snapshot.isOrdered ? snapshot.notes : snapshot.notes.sorted { $0.modifiedAt > $1.modifiedAt }
+        loadedCleanly = snapshot.loadedCleanly
+        fileError = Self.loadProblem(snapshot, at: notesFile.url)
+        if snapshot.isUnreadableInPlace {
+            self.notesFile = NotesFile(url: notesFile.url.deletingPathExtension().appendingPathExtension("recovered-\(Int(Date().timeIntervalSince1970)).json"))
+            fileError = (fileError ?? "") + " This session is saved to \(self.notesFile.url.path) instead."
+        }
+        savedCount = changeCount
+    }
+
+    private static func loadProblem(_ snapshot: NotesSnapshot, at url: URL) -> String? {
+        let kept = " Groups and tabs are not saved until the notes file loads normally."
+        if snapshot.recoveredFromPrevious {
+            let copy = snapshot.unreadableCopy.map { " The unreadable file was kept at \($0.path)." } ?? ""
+            return "Your notes file could not be read, so the notes from the save before it were restored." + copy + kept
+        }
+        if snapshot.skippedNotes > 0 {
+            let copy = snapshot.unreadableCopy.map { " The original file was kept at \($0.path)." } ?? ""
+            return "\(snapshot.skippedNotes) damaged \(snapshot.skippedNotes == 1 ? "note" : "notes") could not be read and \(snapshot.skippedNotes == 1 ? "is" : "are") left out." + copy + kept
+        }
         if let copy = snapshot.unreadableCopy {
-            fileError = "Your notes file could not be read, so the list starts empty. The unreadable file was kept at \(copy.path)."
+            return "Your notes file could not be read, so the list starts empty. The unreadable file was kept at \(copy.path)." + kept
         }
         if snapshot.isUnreadableInPlace {
-            keepsUnreadableFile = true
-            fileError = "Your notes file at \(cache.url.path) could not be read, so the list starts empty. Nothing will be saved over it until the app is restarted and the file can be read."
+            return "Your notes file at \(url.path) could not be read or copied, so the list starts empty and the file is left untouched." + kept
         }
-        refreshLocalFiles()
+        return nil
+    }
+
+    /// Moves on whenever a note's text changes, so a view can tell new text from the text it holds without comparing them.
+    public func revision(of id: Note.ID) -> Int {
+        revisions[id] ?? 0
+    }
+
+    private func bumpRevision(_ id: Note.ID) -> Int {
+        lastRevision += 1
+        revisions[id] = lastRevision
+        return lastRevision
+    }
+
+    public func text(of note: Note) -> NoteText {
+        NoteText(note: note.id, revision: revision(of: note.id), string: note.body)
+    }
+
+    /*
+     Edits nearly always change the length, which is free to read from editor text and settles it. Otherwise the
+     UTF-16 units are compared as they are; String == would normalize both texts first, which is far slower.
+     */
+    private static func differs(_ old: String, _ new: String) -> Bool {
+        old.utf16.count != new.utf16.count || !(old as NSString).isEqual(to: new)
     }
 
     public func note(_ id: Note.ID) -> Note? {
@@ -67,7 +119,7 @@ public final class NoteStore {
         pinnedFirst(notes.filter { $0.localFile != nil })
     }
 
-    public func pinnedFirst(_ notes: [Note]) -> [Note] {
+    private func pinnedFirst(_ notes: [Note]) -> [Note] {
         notes.filter(\.isPinned) + notes.filter { !$0.isPinned }
     }
 
@@ -98,36 +150,69 @@ public final class NoteStore {
 
     public func openFile(_ url: URL, at position: Int = 0) throws -> Note.ID {
         let url = url.standardizedFileURL.resolvingSymlinksInPath()
-        if let index = notes.firstIndex(where: { $0.localFile?.path == url.path }) {
-            syncWithDisk(index)
+        if let note = notes.first(where: { $0.localFile?.path == url.path }) {
+            waitForFileWrites()
+            if let job = fileJob(note.id) { apply(LocalFileDisk.check(job)) }
             persist()
-            return notes[index].id
+            return note.id
         }
-        let (text, encoding) = try Self.readText(url)
-        let file = LocalFile(path: url.path, bookmark: try? url.bookmarkData(), stamp: Self.stamp(url), encoding: encoding.rawValue)
+        let (text, encoding) = try LocalFileDisk.readText(url)
+        let file = LocalFile(path: url.path, bookmark: try? url.bookmarkData(), stamp: LocalFileDisk.stamp(url), encoding: encoding.rawValue)
         let note = Note(body: text, modifiedAt: Date(), localFile: file)
         notes.insert(note, at: min(max(position, 0), notes.count))
         persist()
         return note.id
     }
 
-    public func refreshLocalFiles() {
-        for index in notes.indices where notes[index].localFile != nil {
-            syncWithDisk(index)
+    /*
+     Checks every opened file on the disk queue and loads the ones changed elsewhere. A note edited, or written,
+     while the check ran is left for the next one, which then sees the edit and reports a conflict instead.
+     */
+    public func refreshLocalFiles() async {
+        let jobs = notes.compactMap { fileJob($0.id) }
+        guard !jobs.isEmpty else { return }
+        let checks = await withCheckedContinuation { continuation in
+            diskQueue.async { continuation.resume(returning: jobs.map(LocalFileDisk.check)) }
+        }
+        let before = changeCount
+        checks.forEach(apply)
+        if changeCount != before { persistSoon() }
+    }
+
+    private func fileJob(_ id: Note.ID) -> FileJob? {
+        guard !writing.contains(id), let note = note(id), let file = note.localFile else { return nil }
+        return FileJob(id: id, revision: revision(of: id), file: file)
+    }
+
+    private func apply(_ check: LocalFileDisk.Check) {
+        let id = check.job.id
+        guard !writing.contains(id), let index = notes.firstIndex(where: { $0.id == id }), notes[index].localFile == check.job.file,
+              revision(of: id) == check.job.revision, let location = check.location else { return }
+        if let moved = location.moved { notes[index].localFile = moved }
+        guard check.stamp != check.job.file.stamp else { return }
+        if check.job.file.needsSave {
+            fileConflict = FileConflict(id: id, name: notes[index].title)
+        } else if let disk = check.disk {
+            takeDiskText(disk.text, at: index)
+            notes[index].localFile?.encoding = disk.encoding
+            notes[index].localFile?.stamp = check.stamp
         }
     }
 
     public func resolveFileConflict(keepAppVersion: Bool) {
         guard let conflict = fileConflict else { return }
         fileConflict = nil
-        guard let index = notes.firstIndex(where: { $0.id == conflict.id }), let url = resolvedURL(index) else { return }
+        waitForFileWrites()
+        guard let index = notes.firstIndex(where: { $0.id == conflict.id }), let file = notes[index].localFile,
+              let location = LocalFileDisk.locate(file) else { return }
+        if let moved = location.moved { notes[index].localFile = moved }
         if keepAppVersion {
-            notes[index].localFile?.stamp = Self.stamp(url)
+            notes[index].localFile?.stamp = LocalFileDisk.stamp(location.url)
             notes[index].localFile?.needsSave = true
-        } else if let (text, encoding) = try? Self.readText(url) {
+        } else if let (text, encoding) = try? LocalFileDisk.readText(location.url) {
             takeDiskText(text, at: index)
             notes[index].localFile?.encoding = encoding.rawValue
-            notes[index].localFile?.stamp = Self.stamp(url)
+            notes[index].localFile?.stamp = LocalFileDisk.stamp(location.url)
             notes[index].localFile?.needsSave = false
         }
         persist()
@@ -137,86 +222,30 @@ public final class NoteStore {
         fileError = nil
     }
 
-    private func syncWithDisk(_ index: Int) {
-        guard let file = notes[index].localFile, let url = resolvedURL(index) else { return }
-        let stamp = Self.stamp(url)
-        guard stamp != file.stamp else { return }
-        if file.needsSave {
-            fileConflict = FileConflict(id: notes[index].id, name: notes[index].title)
-        } else if let (text, encoding) = try? Self.readText(url) {
-            takeDiskText(text, at: index)
-            notes[index].localFile?.encoding = encoding.rawValue
-            notes[index].localFile?.stamp = stamp
-        }
-    }
-
     private func takeDiskText(_ text: String, at index: Int) {
-        guard notes[index].body != text else { return }
+        guard Self.differs(notes[index].body, text) else { return }
         notes[index].body = text
         notes[index].modifiedAt = Date()
+        _ = bumpRevision(notes[index].id)
     }
 
-    // Bookmarks follow a file that was renamed or moved; a file in the Trash counts as gone so edits are not written there.
-    private func resolvedURL(_ index: Int) -> URL? {
-        guard let file = notes[index].localFile else { return nil }
-        var url = URL(fileURLWithPath: file.path)
-        var isStale = false
-        if let bookmark = file.bookmark,
-           let resolved = try? URL(resolvingBookmarkData: bookmark, options: [.withoutUI, .withoutMounting], bookmarkDataIsStale: &isStale) {
-            url = resolved.standardizedFileURL
-        }
-        guard !url.path.contains("/.Trash/"), FileManager.default.fileExists(atPath: url.path) else { return nil }
-        if url.path != file.path || isStale {
-            notes[index].localFile?.path = url.path
-            notes[index].localFile?.bookmark = (try? url.bookmarkData()) ?? file.bookmark
-        }
-        return url
+    /// The user's Trash, and the per-user Trash folder macOS keeps on every external volume.
+    nonisolated public static func isInTrash(_ path: String) -> Bool {
+        path.split(separator: "/").contains { $0 == ".Trash" || $0 == ".Trashes" }
     }
 
-    private static func stamp(_ url: URL) -> FileStamp? {
-        guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]) else { return nil }
-        return FileStamp(modifiedAt: values.contentModificationDate, size: values.fileSize)
-    }
-
-    private static func readText(_ url: URL) throws -> (String, String.Encoding) {
-        let values = try? url.resourceValues(forKeys: [.fileSizeKey, .isDirectoryKey])
-        guard values?.isDirectory != true else { throw FileOpenError.notText(url.lastPathComponent) }
-        guard (values?.fileSize ?? 0) <= maxFileSize else { throw FileOpenError.tooLarge(url.lastPathComponent) }
-        var encoding = String.Encoding.utf8
-        do {
-            let text = try String(contentsOf: url, usedEncoding: &encoding)
-            return (text, encoding)
-        } catch {
-            throw FileOpenError.notText(url.lastPathComponent)
-        }
-    }
-
-    // Replacing the file keeps its Finder tags, extended attributes and creation date; an in-place write covers folders where that fails.
-    private static func write(_ text: String, encoding: UInt, to url: URL) throws {
-        let preferred = String.Encoding(rawValue: encoding)
-        guard let data = text.data(using: text.canBeConverted(to: preferred) ? preferred : .utf8) else {
-            throw CocoaError(.fileWriteInapplicableStringEncoding)
-        }
-        let manager = FileManager.default
-        if let folder = try? manager.url(for: .itemReplacementDirectory, in: .userDomainMask, appropriateFor: url, create: true) {
-            defer { try? manager.removeItem(at: folder) }
-            let temporary = folder.appendingPathComponent(url.lastPathComponent)
-            if (try? data.write(to: temporary)) != nil, (try? manager.replaceItemAt(url, withItemAt: temporary)) != nil {
-                return
-            }
-        }
-        try data.write(to: url)
-    }
-
-    public func updateBody(_ id: Note.ID, _ body: String) {
+    /// Returns the note's new revision, or nil when nothing changed.
+    @discardableResult
+    public func updateBody(_ id: Note.ID, _ body: String) -> Int? {
         guard let index = notes.firstIndex(where: { $0.id == id }),
-              !notes[index].isLocked, notes[index].body != body else { return }
+              !notes[index].isLocked, Self.differs(notes[index].body, body) else { return nil }
         notes[index].body = body
         notes[index].modifiedAt = Date()
         if notes[index].localFile != nil {
             notes[index].localFile?.needsSave = true
         }
         persistSoon()
+        return bumpRevision(id)
     }
 
     public func setLocked(_ id: Note.ID, _ locked: Bool) {
@@ -235,9 +264,12 @@ public final class NoteStore {
         persist()
     }
 
-    /// Notes kept in the app with no text at all, which the list shows as "Untitled".
     public var emptyNotes: [Note] {
         appNotes.filter { !$0.isLocked && $0.body.allSatisfy(\.isWhitespace) }
+    }
+
+    public var hasEmptyNotes: Bool {
+        notes.contains { $0.localFile == nil && !$0.isLocked && $0.body.allSatisfy(\.isWhitespace) }
     }
 
     public func deleteEmptyNotes() {
@@ -257,7 +289,7 @@ public final class NoteStore {
     /// Takes an opened file off the list after writing its pending edits; the file stays on disk.
     public func close(_ id: Note.ID) {
         guard let index = notes.firstIndex(where: { $0.id == id }), notes[index].localFile != nil else { return }
-        writePendingFiles()
+        flushFileWrites()
         guard notes[index].localFile?.needsSave != true else {
             fileError = fileError ?? "“\(notes[index].title)” could not be saved to its file, so it is still open. Fix the save error, then close it again."
             return
@@ -266,35 +298,69 @@ public final class NoteStore {
         persist()
     }
 
-    /// Writes everything now; returns why the notes could not be saved, if they could not.
+    /// Writes whatever changed, and waits for it; returns why the notes could not be saved, if they could not.
     @discardableResult
     public func saveNow() -> String? {
-        persist()
-        return cache.flush().map { "Couldn’t save your notes: \($0.localizedDescription)" }
+        flushFileWrites()
+        saveCache()
+        return notesFile.flush().map { "Couldn’t save your notes: \($0.localizedDescription)" }
+    }
+
+    /// Opened files whose edits have not reached the file yet; their text is still kept with the notes.
+    public var unsavedFileNames: [String] {
+        notes.filter { $0.localFile?.needsSave == true || fileConflict?.id == $0.id }.map(\.title)
     }
 
     private func writePendingFiles() {
-        for index in notes.indices {
-            guard let file = notes[index].localFile, file.needsSave, fileConflict?.id != notes[index].id else { continue }
-            let id = notes[index].id
-            let name = notes[index].title
-            guard let url = resolvedURL(index) else {
-                reportWriteFailure(id, "Could not save “\(name)”: the file is no longer at \(file.path) (it was deleted or moved to the Trash). Your text is still in the app.")
-                continue
-            }
-            guard Self.stamp(url) == file.stamp else {
-                fileConflict = FileConflict(id: id, name: name)
-                continue
-            }
-            do {
-                try Self.write(notes[index].body, encoding: file.encoding, to: url)
-                notes[index].localFile?.needsSave = false
-                notes[index].localFile?.stamp = Self.stamp(url)
-                failedFileWrites.remove(id)
-            } catch {
-                reportWriteFailure(id, "Could not save “\(name)”: \(error.localizedDescription) Your text is still in the app, and saving is retried on your next edit.")
+        for note in notes where !writing.contains(note.id) && note.localFile?.needsSave == true && fileConflict?.id != note.id {
+            guard let job = fileJob(note.id) else { continue }
+            let body = note.body
+            writing.insert(note.id)
+            diskQueue.async { [finishedWrites, weak self] in
+                finishedWrites.add(LocalFileDisk.write(job, body: body))
+                Task { @MainActor in self?.applyFinishedWrites() }
             }
         }
+    }
+
+    private func applyFinishedWrites() {
+        let before = changeCount
+        for write in finishedWrites.take() {
+            let id = write.job.id
+            writing.remove(id)
+            guard let index = notes.firstIndex(where: { $0.id == id }), notes[index].localFile != nil else { continue }
+            if let moved = write.location?.moved {
+                notes[index].localFile?.path = moved.path
+                notes[index].localFile?.bookmark = moved.bookmark
+            }
+            let name = notes[index].title
+            switch write.result {
+            case .written(let stamp):
+                notes[index].localFile?.stamp = stamp
+                // Edits made while it was written still wait for the next write.
+                if revision(of: id) == write.job.revision { notes[index].localFile?.needsSave = false }
+                failedFileWrites.remove(id)
+            case .changedOnDisk:
+                fileConflict = FileConflict(id: id, name: name)
+            case .missing:
+                reportWriteFailure(id, "Could not save “\(name)”: the file is no longer at \(write.job.file.path) (it was deleted or moved to the Trash). Your text is still in the app.")
+            case .failed(let message):
+                reportWriteFailure(id, "Could not save “\(name)”: \(message) Your text is still in the app, and saving is retried on your next edit.")
+            }
+        }
+        if changeCount != before { persistSoon() }
+    }
+
+    private func waitForFileWrites() {
+        diskQueue.sync {}
+        applyFinishedWrites()
+    }
+
+    /// Closing a file and quitting wait here until the latest text of every opened file has been written.
+    private func flushFileWrites() {
+        waitForFileWrites()
+        writePendingFiles()
+        waitForFileWrites()
     }
 
     private func reportWriteFailure(_ id: Note.ID, _ message: String) {
@@ -305,9 +371,15 @@ public final class NoteStore {
 
     private func persist() {
         writePendingFiles()
+        saveCache()
+    }
+
+    private func saveCache() {
         cacheTask?.cancel()
-        guard !keepsUnreadableFile else { return }
-        cache.save(CacheSnapshot(notes: notes)) { [weak self] error in
+        guard savedCount != changeCount else { return }
+        savedCount = changeCount
+        notesFile.save(NotesSnapshot(notes: notes)) { [weak self] error in
+            self?.savedCount = nil
             self?.fileError = "Couldn’t save your notes: \(error.localizedDescription) They are still open in the app."
         }
     }

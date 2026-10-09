@@ -194,11 +194,6 @@ public enum ContentLanguage: String, CaseIterable, Sendable {
         [.typescript, .swift, .python, .sql, .css, .javascript, .yaml, .shell].firstIndex(of: language) ?? 99
     }
 
-    private static func regex(_ pattern: String, _ options: NSRegularExpression.Options = []) -> NSRegularExpression {
-        // Patterns are compile-time constants; a failure here is a programming error.
-        try! NSRegularExpression(pattern: pattern, options: options)
-    }
-
     private static let htmlTags = regex(#"<(html|head|body|div|span|p|a|ul|ol|li|table|section|header|footer|main|nav|script|style|meta|link|title|h[1-6]|img|form|input|button|br)\b"#)
 
     private static let linePatterns: [(ContentLanguage, [NSRegularExpression])] = [

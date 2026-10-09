@@ -3,7 +3,7 @@ import SwiftUI
 
 extension AppModel {
     func toggleSidebar() {
-        withAnimation { sidebarVisibility = sidebarVisibility == .detailOnly ? .all : .detailOnly }
+        withAnimation { layout.sidebarVisibility = layout.sidebarVisibility == .detailOnly ? .all : .detailOnly }
     }
 
     /// ⌘B as in VS Code: Bold while typing in a Markdown note (the Format menu takes it), the sidebar everywhere else.

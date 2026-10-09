@@ -1,5 +1,5 @@
-import HardydoNotesCore
 import Foundation
+import HardydoNotesCore
 
 func runGroupChecks() {
     let notes = (0..<5).map { Note(body: "n\($0)") }
@@ -14,6 +14,14 @@ func runGroupChecks() {
 
     var groups = NoteGroups()
     checkEqual(layout(groups), ["n0", "n1", "n2", "n3", "n4"], "without groups every note is listed on its own")
+
+    var placing = NoteGroups()
+    let trip = placing.create(name: "", with: notes[0].id)
+    checkEqual(placing.group(trip)?.displayName, "Group", "a group without a name shows as Group")
+    check(placing.insertionIndex(joining: trip, for: notes[0].id, in: notes) == nil, "the only note of a group stays put")
+    placing.add(notes[2].id, to: trip)
+    let move = placing.insertionIndex(joining: trip, for: notes[4].id, in: notes)
+    checkEqual(move.map { [$0.from, $0.toOffset] }, [4, 3], "a note joining a group moves to just after its last note")
 
     let work = groups.create(name: "Work", with: notes[1].id)
     groups.add(notes[3].id, to: work)

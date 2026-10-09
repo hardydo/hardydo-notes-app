@@ -10,6 +10,8 @@ public struct NoteGroup: Codable, Equatable, Identifiable, Sendable {
     public var color: GroupColor
     public var isCollapsed: Bool
     public var isPinned = false
+
+    public var displayName: String { name.isEmpty ? "Group" : name }
 }
 
 extension NoteGroup {
@@ -101,10 +103,20 @@ public struct NoteGroups: Codable, Equatable, Sendable {
         if members.allSatisfy(\.isPinned) { update(group.id) { $0.isPinned = true } }
     }
 
-    /// Forgets notes that no longer exist, and the groups left empty by them.
     public mutating func prune(keeping notes: Set<Note.ID>) {
         membership = membership.filter { notes.contains($0.key) }
         dropEmptyGroups()
+    }
+
+    /*
+     A group shows where its first note is, so a note joining it moves next to the others instead of dragging the
+     group along. Returns the list move for that, or nil when the group has no other note.
+     */
+    public func insertionIndex(joining group: NoteGroup.ID, for note: Note.ID, in notes: [Note]) -> (from: Int, toOffset: Int)? {
+        guard let last = notes.lastIndex(where: { $0.id != note && membership[$0.id] == group }),
+              let from = notes.firstIndex(where: { $0.id == note })
+        else { return nil }
+        return (from, last + 1)
     }
 
     private mutating func dropEmptyGroups() {

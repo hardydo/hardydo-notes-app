@@ -19,7 +19,37 @@ final class EditorController {
     @ObservationIgnored var pendingReveal: NSRange?
     /// Editing shortcuts only act while typing in the editor, never on the note behind a search or rename field.
     private(set) var hasFocus = false
-    private(set) var caretLocation = 0
+    /// The 0-based line holding the caret, published only when it changes line.
+    private(set) var caretLine = 0
+
+    var lineCount: Int? {
+        (textView as? CodeTextView)?.lines.count
+    }
+
+    @ObservationIgnored private var sessions: [Note.ID: EditorSession] = [:]
+
+    func session(for note: Note.ID, make: () -> EditorSession) -> EditorSession {
+        if let session = sessions[note] { return session }
+        let session = make()
+        sessions[note] = session
+        return session
+    }
+
+    /// Frees the editors of tabs that closed; each keeps its undo history only while its tab is open.
+    func keepSessions(for notes: some Sequence<Note.ID>) {
+        let open = Set(notes)
+        for (note, session) in sessions where !open.contains(note) {
+            session.commit()
+            detach(session.textView)
+            sessions[note] = nil
+        }
+    }
+
+    func detach(_ textView: CodeTextView) {
+        guard self.textView === textView else { return }
+        self.textView = nil
+        commitPending = {}
+    }
 
     func attach(_ textView: CodeTextView, commit: @escaping () -> Void) {
         self.textView = textView
@@ -30,16 +60,16 @@ final class EditorController {
                 if self?.hasFocus != focused { self?.hasFocus = focused }
             }
         }
-        textView.onCaretMove = { [weak self] location in
+        textView.onCaretMove = { [weak self, weak textView] _ in
             Task { @MainActor in
-                if self?.caretLocation != location { self?.caretLocation = location }
+                guard let line = textView?.caretLine, self?.caretLine != line else { return }
+                self?.caretLine = line
             }
         }
         textView.onCaretMove(textView.selectedRange().location)
         scrollView?.onScroll = { [weak self] in self?.onScroll() }
     }
 
-    /// Called as the reader scrolls the editor.
     @ObservationIgnored var onScroll: () -> Void = {}
 
     private var scrollView: EditorScrollView? {
@@ -94,6 +124,7 @@ final class EditorController {
     func replace(_ range: NSRange, with text: String) -> Bool {
         guard let textView, textView.isEditable, NSMaxRange(range) <= (textView.string as NSString).length,
               textView.shouldChangeText(in: range, replacementString: text) else { return false }
+        textView.breakUndoCoalescing()
         textView.textStorage?.replaceCharacters(in: range, with: text)
         textView.didChangeText()
         return true
@@ -124,6 +155,7 @@ final class EditorController {
     func apply(_ makeEdit: (String, NSRange) -> TextEdit?) -> Bool {
         guard let textView, textView.isEditable, let edit = makeEdit(textView.string, textView.selectedRange()),
               textView.shouldChangeText(in: edit.range, replacementString: edit.replacement) else { return false }
+        textView.breakUndoCoalescing()
         textView.textStorage?.replaceCharacters(in: edit.range, with: edit.replacement)
         textView.didChangeText()
         textView.setSelectedRange(edit.selection)

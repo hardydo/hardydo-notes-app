@@ -27,10 +27,14 @@ enum ExportFormat: Int, CaseIterable {
 
 @MainActor
 final class NoteExporter: NSObject {
-    private static let formatKey = "exportFormat"
+    private let preferences: Preferences
     private weak var panel: NSSavePanel?
     private var pdf: PDFRenderer?
     private var language = ContentLanguage.markdown
+
+    init(preferences: Preferences) {
+        self.preferences = preferences
+    }
 
     /// Asks where to save, then writes the note in its own format, as a web page or as a PDF; errors come back for the caller to show.
     func export(_ note: Note, language: ContentLanguage, from window: NSWindow?) async throws {
@@ -41,7 +45,7 @@ final class NoteExporter: NSObject {
         self.language = language
         let popup = NSPopUpButton(frame: .zero, pullsDown: false)
         popup.addItems(withTitles: ExportFormat.allCases.map { $0.title(language) })
-        popup.selectItem(at: AppPaths.defaults.integer(forKey: Self.formatKey))
+        popup.selectItem(at: preferences.exportFormat)
         popup.target = self
         popup.action = #selector(formatChanged(_:))
         let label = NSTextField(labelWithString: "Format:")
@@ -57,7 +61,7 @@ final class NoteExporter: NSObject {
         let response = if let window { await panel.beginSheetModal(for: window) } else { panel.runModal() }
         guard response == .OK, let url = panel.url else { return }
         let chosen = ExportFormat(rawValue: popup.indexOfSelectedItem) ?? .source
-        AppPaths.defaults.set(chosen.rawValue, forKey: Self.formatKey)
+        preferences.exportFormat = chosen.rawValue
         switch chosen {
         case .source:
             try Data(note.body.utf8).write(to: url, options: .atomic)
@@ -81,6 +85,10 @@ final class NoteExporter: NSObject {
     }
 }
 
+private struct PageLoadTimeout: LocalizedError {
+    var errorDescription: String? { "The page took too long to load." }
+}
+
 /// Lays the preview page out on the printer's paper size; the page's print styles keep it light.
 @MainActor
 private final class PDFRenderer: NSObject, WKNavigationDelegate {
@@ -96,7 +104,7 @@ private final class PDFRenderer: NSObject, WKNavigationDelegate {
         defer { window.close() }
         let timeout = Task { [weak self] in
             try? await Task.sleep(for: .seconds(20))
-            self?.finishLoading(CocoaError(.fileWriteUnknown))
+            self?.finishLoading(PageLoadTimeout())
         }
         defer { timeout.cancel() }
         try await withCheckedThrowingContinuation { continuation in

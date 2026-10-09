@@ -14,7 +14,6 @@ final class EditorScrollView: NSScrollView {
     /// Scrolls the reader makes, as opposed to the ones that follow the preview.
     var onScroll: () -> Void = {}
     private var isFollowing = false
-    private var lineStarts: [Int]?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -26,31 +25,19 @@ final class EditorScrollView: NSScrollView {
         fatalError("init(coder:) is not used")
     }
 
-    override var documentView: NSView? {
-        didSet {
-            lineStarts = nil
-            guard let storage = (documentView as? NSTextView)?.textStorage else { return }
-            NotificationCenter.default.addObserver(self, selector: #selector(textChanged), name: NSTextStorage.didProcessEditingNotification, object: storage)
-        }
-    }
-
     @objc private func boundsChanged(_ notification: Notification) {
         if !isFollowing { onScroll() }
     }
 
-    @objc private func textChanged(_ notification: Notification) {
-        if (notification.object as? NSTextStorage)?.editedMask.contains(.editedCharacters) == true { lineStarts = nil }
-    }
-
     /// The 1-based line at the top of the view, plus the fraction of it scrolled past.
     var topLine: Double? {
-        guard let textView = documentView as? NSTextView, let layoutManager = textView.layoutManager,
+        guard let textView = documentView as? CodeTextView, let layoutManager = textView.layoutManager,
               let container = textView.textContainer, layoutManager.numberOfGlyphs > 0 else { return nil }
         let top = contentView.bounds.minY - textView.textContainerOrigin.y
         guard top > 0 else { return 1 }
         let glyph = layoutManager.glyphIndex(for: NSPoint(x: 0, y: top), in: container)
-        let starts = currentLineStarts(textView)
-        let index = CodeFolding.line(of: layoutManager.characterIndexForGlyph(at: glyph), in: starts)
+        let starts = textView.lines.starts
+        let index = textView.lines.line(at: layoutManager.characterIndexForGlyph(at: glyph))
         let rect = lineRect(index, starts, in: textView)
         let fraction = rect.height > 0 ? min(max((top - rect.minY) / rect.height, 0), 1) : 0
         return Double(index + 1) + fraction
@@ -58,8 +45,8 @@ final class EditorScrollView: NSScrollView {
 
     /// Brings `line` (as `topLine` gives it) to the top without reporting the move back.
     func follow(_ line: Double) {
-        guard let textView = documentView as? NSTextView, let layoutManager = textView.layoutManager else { return }
-        let starts = currentLineStarts(textView)
+        guard let textView = documentView as? CodeTextView, let layoutManager = textView.layoutManager else { return }
+        let starts = textView.lines.starts
         let index = min(max(Int(line) - 1, 0), starts.count - 1)
         let length = (textView.string as NSString).length
         let start = min(starts[index], length)
@@ -76,13 +63,6 @@ final class EditorScrollView: NSScrollView {
         contentView.scroll(to: NSPoint(x: contentView.bounds.minX, y: clampedY(y)))
         reflectScrolledClipView(contentView)
         isFollowing = false
-    }
-
-    private func currentLineStarts(_ textView: NSTextView) -> [Int] {
-        if let lineStarts { return lineStarts }
-        let starts = CodeFolding.lineStarts(textView.string as NSString)
-        lineStarts = starts
-        return starts
     }
 
     // From the top of the line's first fragment to the bottom of its last, so a wrapped line counts as a whole.
@@ -146,16 +126,19 @@ final class EditorScrollView: NSScrollView {
             return
         }
         super.setFrameSize(newSize)
-        guard anchor.character > Self.exactLimit else {
+        // A run of resize steps (a window or split drag) restores approximately and settles exactly once it stops.
+        if anchor.character <= Self.exactLimit, !inLiveResize, settle == nil {
             restore(anchor, exact: true)
-            return
+        } else {
+            dragAnchor = anchor
+            restore(anchor, exact: false)
         }
-        dragAnchor = anchor
-        restore(anchor, exact: false)
         settle?.cancel()
         settle = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(200))
-            guard !Task.isCancelled, let self, let anchor = self.dragAnchor else { return }
+            guard !Task.isCancelled, let self else { return }
+            self.settle = nil
+            guard let anchor = self.dragAnchor else { return }
             self.dragAnchor = nil
             self.restore(anchor, exact: true)
         }

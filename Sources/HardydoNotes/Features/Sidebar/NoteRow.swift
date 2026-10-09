@@ -1,18 +1,14 @@
 import HardydoNotesCore
 import SwiftUI
 
-/// A sidebar row. Hover lives in the row, so moving the pointer redraws only the rows it crosses.
-struct NoteRow: View, Equatable {
-    let note: Note
-    let isSelected: Bool
+/// A sidebar row. Hover and selection live in the row, so moving the pointer or the selection redraws only the rows involved.
+struct NoteRow: View {
+    let note: NoteSummary
+    let state: RowState
     let actions: NoteRowActions
     @StateObject private var hover = ViewState(false)
 
     private var isHovered: Bool { hover.value }
-
-    nonisolated static func == (lhs: NoteRow, rhs: NoteRow) -> Bool {
-        MainActor.assumeIsolated { lhs.note == rhs.note && lhs.isSelected == rhs.isSelected }
-    }
 
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
@@ -31,19 +27,20 @@ struct NoteRow: View, Equatable {
             ZStack(alignment: .trailing) {
                 indicators
                     .opacity(isHovered && !note.isLocked ? 0 : 1)
-                if !note.isLocked {
-                    HoverCloseButton(isVisible: isHovered, size: 18, help: note.localFile == nil ? "Delete Note" : "Close File (the file stays on disk)") {
+                if isHovered && !note.isLocked {
+                    HoverCloseButton(size: 18, help: note.filePath == nil ? "Delete Note" : "Close File (the file stays on disk)") {
                         actions.remove(note.id)
                     }
                 }
             }
+            .frame(minWidth: 18, alignment: .trailing)
         }
         .padding(.leading, 10)
         .padding(.trailing, 8)
         .padding(.vertical, 7)
         .background(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(isSelected ? Color.accentColor.opacity(0.22) : isHovered ? Color.primary.opacity(0.05) : .clear)
+                .fill(state.isSelected ? Color.accentColor.opacity(0.22) : isHovered ? Color.primary.opacity(0.05) : .clear)
         )
         .contentShape(Rectangle())
         .onHover { inside in
@@ -55,7 +52,6 @@ struct NoteRow: View, Equatable {
             }
         }
         .contextMenu { NoteContextMenu(model: actions.model, note: note) }
-        .onDrop(of: [.fileURL], isTargeted: nil) { actions.openFiles($0, at: note.id) }
     }
 
     private var indicators: some View {
@@ -66,7 +62,7 @@ struct NoteRow: View, Equatable {
             if note.isLocked {
                 Image(systemName: "lock.fill").help("Locked (read-only)")
             }
-            if let path = note.localFile?.path {
+            if let path = note.filePath {
                 Image(systemName: "doc").help(path)
             }
         }
@@ -84,23 +80,16 @@ struct NoteRow: View, Equatable {
     }
 }
 
-/// The ✕ that appears on hover, shared by sidebar rows and tabs.
-struct HoverCloseButton: View {
-    let isVisible: Bool
-    let size: CGFloat
-    let help: String
-    let action: () -> Void
+@MainActor
+struct NoteRowActions {
+    let model: AppModel
+    let focusList: () -> Void
 
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: "xmark")
-                .font(.system(size: size / 2, weight: .bold))
-                .frame(width: size, height: size)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.icon)
-        .opacity(isVisible ? 1 : 0)
-        .allowsHitTesting(isVisible)
-        .help(help)
+    func select(_ id: Note.ID) {
+        model.selectNote(id)
+        focusList()
     }
+
+    func keep(_ id: Note.ID) { model.keepTab(id) }
+    func remove(_ id: Note.ID) { model.requestDelete(id) }
 }

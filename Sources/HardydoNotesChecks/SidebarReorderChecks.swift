@@ -12,7 +12,7 @@ func runSidebarReorderChecks() {
         groups.rows(for: list.filter(\.isPinned) + list.filter { !$0.isPinned }).map { row in
             switch row {
             case .header(let group): group.name + (group.isCollapsed ? "+" : ":")
-            case .note(let note, let group): (group == nil ? "" : "  ") + note.body
+            case .note(let note, let group): (group == nil ? "" : "  ") + note.title
             }
         }
     }
@@ -22,7 +22,7 @@ func runSidebarReorderChecks() {
         guard let plan = groups.reorderPlan(moving: moving, in: list) else { return nil }
         let remaining = plan.rows.filter { !plan.block.contains($0) }
         let index = anchor.map { (remaining.firstIndex(of: $0) ?? -2) + 1 } ?? 0
-        guard let result = upper ? plan.upperSlots[index] : plan.slots[index] else { return nil }
+        guard let result = plan.result(at: index, upper: upper) else { return nil }
         let byID = Dictionary(uniqueKeysWithValues: list.map { ($0.id, $0) })
         return layout(result.groups, result.order.compactMap { byID[$0] })
     }
@@ -38,7 +38,7 @@ func runSidebarReorderChecks() {
                "a loose note dropped high in the gap at a group's end joins the group as its last note")
     checkEqual(drop(id[4], after: id[2], upper: true, groups, notes), ["n0", "Work:", "  n1", "  n2", "  n4", "n3"],
                "a loose note from below joins a group at its end")
-    check(groups.reorderPlan(moving: id[3], in: notes)?.upperSlots[0] == nil, "only the gap at a group's end has two halves")
+    check(groups.reorderPlan(moving: id[3], in: notes)?.result(at: 0, upper: true) == nil, "only the gap at a group's end has two halves")
     checkEqual(drop(id[2], after: id[4], groups, notes), ["n0", "Work:", "  n1", "n3", "n4", "n2"],
                "a note dragged out of a group leaves it")
     checkEqual(drop(id[1], after: id[2], upper: true, groups, notes), ["n0", "Work:", "  n2", "  n1", "n3", "n4"],
@@ -73,11 +73,19 @@ func runSidebarReorderChecks() {
                "a note dropped after a collapsed group stays loose below it")
     checkEqual(drop(work, after: id[4], collapsed, notes), ["n0", "n3", "n4", "Work+"],
                "a collapsed group moves with its hidden notes")
-    let moved = collapsed.reorderPlan(moving: work, in: notes)?.slots.values.first { $0.order.last == id[2] }
+    let movedPlan = collapsed.reorderPlan(moving: work, in: notes)
+    let moved = (0..<(movedPlan?.slotCount ?? 0)).lazy.compactMap { movedPlan?.result(at: $0, upper: false) }.first { $0.order.last == id[2] }
     check(moved?.order.suffix(2) == [id[1], id[2]], "hidden notes of a moved group keep their order")
+
+    let forward = groups.reorderPlan(moving: id[0], in: notes)!
+    let backward = groups.reorderPlan(moving: id[0], in: notes)!
+    let ascending = (0..<forward.slotCount).flatMap { [forward.result(at: $0, upper: false), forward.result(at: $0, upper: true)] }
+    let descending = (0..<backward.slotCount).reversed().flatMap { [backward.result(at: $0, upper: true), backward.result(at: $0, upper: false)] }
+    checkEqual(ascending, Array(descending.reversed()), "a landing place gives the same result whatever order places are asked in")
+    check(forward.result(at: forward.slotCount, upper: false) == nil && forward.result(at: -1, upper: false) == nil, "places outside the list are not landing places")
 
     var single = NoteGroups()
     let solo = single.create(name: "Solo", with: id[1])
-    let leaving = single.reorderPlan(moving: id[1], in: notes)?.slots[0]
+    let leaving = single.reorderPlan(moving: id[1], in: notes)?.result(at: 0, upper: false)
     check(leaving?.groups.group(solo) == nil, "dragging the last note out of a group removes the group")
 }

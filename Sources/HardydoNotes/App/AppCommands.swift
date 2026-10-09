@@ -114,11 +114,11 @@ private struct ViewModeCommands: View {
         Button("Toggle Preview") { model.togglePreview() }
             .keyboardShortcut("v", modifiers: [.command, .shift])
         Divider()
-        Button("Zoom In") { model.setZoom(model.zoom * 1.1) }
+        Button("Zoom In") { model.layout.setZoom(model.layout.zoom * 1.1) }
             .keyboardShortcut("=")
-        Button("Zoom Out") { model.setZoom(model.zoom / 1.1) }
+        Button("Zoom Out") { model.layout.setZoom(model.layout.zoom / 1.1) }
             .keyboardShortcut("-")
-        Button("Actual Size") { model.setZoom(1) }
+        Button("Actual Size") { model.layout.setZoom(1) }
             .keyboardShortcut("0")
         Divider()
         Group {

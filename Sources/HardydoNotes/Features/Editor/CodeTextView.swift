@@ -3,11 +3,32 @@ import HardydoNotesCore
 
 final class CodeTextView: NSTextView {
     let folds = FoldState()
+    /// Kept current by the editor's storage delegate; the gutter, folds and scroll sync all read it.
+    private(set) var lines = LineIndex("")
     var onFocusChange: (Bool) -> Void = { _ in }
     var onCaretMove: (Int) -> Void = { _ in }
     private let caret = SmoothCaret()
     private var windowObservers: [NSObjectProtocol] = []
     private var isCaretRefreshPending = false
+
+    isolated deinit {
+        windowObservers.forEach(NotificationCenter.default.removeObserver)
+    }
+
+    func reindexLines() {
+        lines = LineIndex(string as NSString)
+    }
+
+    /// Updates the line starts for an edit and returns the old lines it touched and how many lines it added.
+    func updateLines(edited: NSRange, delta: Int) -> (first: Int, last: Int, added: Int) {
+        let first = lines.line(at: edited.location)
+        let last = lines.line(at: NSMaxRange(edited) - delta)
+        return (first, last, lines.update(string as NSString, edited: edited, delta: delta))
+    }
+
+    var caretLine: Int {
+        lines.line(at: selectedRange().location)
+    }
 
     override func becomeFirstResponder() -> Bool {
         let accepted = super.becomeFirstResponder()
@@ -37,6 +58,8 @@ final class CodeTextView: NSTextView {
         super.viewDidMoveToWindow()
         if caret.superview !== self { addSubview(caret) }
         windowObservers.forEach(NotificationCenter.default.removeObserver)
+        windowObservers = []
+        guard let window else { return }
         windowObservers = [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification].map { name in
             NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.refreshCaret(animated: false) }

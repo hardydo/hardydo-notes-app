@@ -5,7 +5,6 @@ import SwiftUI
 struct QuickOpenState {
     var query = ""
     var highlighted = 0
-    var hovered: Note.ID?
     var fieldFrame = CGRect.zero
     var listFrame = CGRect.zero
 }
@@ -15,19 +14,17 @@ struct QuickOpenView: View {
     let mode: QuickOpenMode
     let width: CGFloat
     @StateObject private var state = ViewState(QuickOpenState())
+    /// Ranked when the query changes, not on every redraw: the cursor, hover and arrow keys all read it.
+    @StateObject private var matches = ViewState<[NoteSummary]>([])
     @StateObject private var frame = ViewState(CGRect.zero)
     @StateObject private var unwatch = ViewState<[() -> Void]>([])
     @FocusState private var isFocused: Bool
     private static let limit = 200
-    private static let rowHeight: CGFloat = 30
+    fileprivate static let rowHeight: CGFloat = 30
     private static let visibleRows: CGFloat = 12
     nonisolated private static let space = "quickOpen"
 
     private var isLineMode: Bool { state.value.query.hasPrefix(":") }
-
-    private var matches: [Note] {
-        isLineMode ? [] : Array(model.quickOpenNotes(matching: state.value.query).prefix(Self.limit))
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -48,18 +45,18 @@ struct QuickOpenView: View {
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .padding(12)
-            } else if matches.isEmpty {
+            } else if matches.value.isEmpty {
                 Text("No matching notes")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .padding(12)
             } else {
-                let matches = matches
+                let matches = matches.value
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(spacing: 0) {
                             ForEach(Array(matches.enumerated()), id: \.element.id) { index, note in
-                                row(note, isHighlighted: index == state.value.highlighted)
+                                QuickOpenRow(note: note, place: place(of: note), isHighlighted: index == state.value.highlighted)
                                     .onTapGesture { open(note) }
                             }
                         }
@@ -84,54 +81,28 @@ struct QuickOpenView: View {
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame.value = $0 }
         .padding(.top, 10)
         .onAppear {
-            state.value.query = mode == .line ? ":" : ""
             isFocused = true
             watchOutside()
         }
         .onDisappear(perform: stopWatching)
-        .onChange(of: state.value.query) { state.value.highlighted = 0 }
+        // The palette stays up when ⌃G follows ⌘P, so the mode's starting text is set on every change of mode.
+        .onChange(of: mode, initial: true) { state.value.query = mode == .line ? ":" : "" }
+        .onChange(of: state.value.query, initial: true) {
+            state.value.highlighted = 0
+            matches.value = isLineMode ? [] : Array(model.quickOpenNotes(matching: state.value.query).prefix(Self.limit))
+        }
     }
 
-    private func row(_ note: Note, isHighlighted: Bool) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: note.localFile != nil ? "doc" : "doc.text")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-            Text(note.title)
-                .font(.system(size: 13))
-                .lineLimit(1)
-            Spacer(minLength: 8)
-            if let path = note.localFile?.path {
-                Text((path as NSString).deletingLastPathComponent)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.head)
-            } else if let group = model.groups.group(of: note.id) {
-                Text(group.displayName)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
-            }
-        }
-        .padding(.horizontal, 8)
-        .frame(height: Self.rowHeight)
-        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(rowFill(note, isHighlighted: isHighlighted)))
-        .contentShape(Rectangle())
-        .onHover { inside in
-            if inside { state.value.hovered = note.id } else if state.value.hovered == note.id { state.value.hovered = nil }
-        }
+    private func place(of note: NoteSummary) -> String? {
+        if let path = note.filePath { return (path as NSString).deletingLastPathComponent }
+        return model.groups.group(of: note.id)?.displayName
     }
 
     // Set on every move, and from one place: the editor underneath keeps putting its own text cursor back.
     private func cursor(at point: CGPoint) -> NSCursor {
         if state.value.fieldFrame.contains(point) { return .iBeam }
-        if !isLineMode, !matches.isEmpty, state.value.listFrame.contains(point) { return .pointingHand }
+        if !isLineMode, !matches.value.isEmpty, state.value.listFrame.contains(point) { return .pointingHand }
         return .arrow
-    }
-
-    private func rowFill(_ note: Note, isHighlighted: Bool) -> Color {
-        if isHighlighted { return Color.accentColor.opacity(0.22) }
-        return state.value.hovered == note.id ? Color.primary.opacity(0.07) : .clear
     }
 
     private var lineHint: String {
@@ -142,19 +113,20 @@ struct QuickOpenView: View {
     }
 
     private func move(_ offset: Int) -> KeyPress.Result {
-        guard !matches.isEmpty else { return .ignored }
-        state.value.highlighted = (state.value.highlighted + offset + matches.count) % matches.count
+        let count = matches.value.count
+        guard count > 0 else { return .ignored }
+        state.value.highlighted = (state.value.highlighted + offset + count) % count
         return .handled
     }
 
     private func submit() {
         if isLineMode {
             guard let line = Int(state.value.query.dropFirst()), model.selectedLineCount > 0 else { return }
-            if model.viewMode == .preview { model.viewMode = .edit }
+            model.leavePreview(to: .edit)
             model.quickOpen = nil
             model.goToLine(line)
-        } else if matches.indices.contains(state.value.highlighted) {
-            open(matches[state.value.highlighted])
+        } else if matches.value.indices.contains(state.value.highlighted) {
+            open(matches.value[state.value.highlighted])
         }
     }
 
@@ -163,6 +135,7 @@ struct QuickOpenView: View {
      of another command, the menu bar, or leaving the window.
      */
     private func watchOutside() {
+        stopWatching()
         let clicks = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [model, frame] event in
             MainActor.assumeIsolated {
                 guard let content = event.window?.contentView else { return }
@@ -211,8 +184,46 @@ struct QuickOpenView: View {
         }
     }
 
-    private func open(_ note: Note) {
+    private func open(_ note: NoteSummary) {
         model.quickOpen = nil
         model.selectNote(note.id)
+    }
+}
+
+/// Hover stays inside the row, so moving the pointer over the list redraws one row at a time.
+private struct QuickOpenRow: View {
+    let note: NoteSummary
+    /// The folder of an opened file, or the group of a note.
+    let place: String?
+    let isHighlighted: Bool
+    @StateObject private var hover = ViewState(false)
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: note.filePath != nil ? "doc" : "doc.text")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+            Text(note.title)
+                .font(.system(size: 13))
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            if let place {
+                Text(place)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(note.filePath != nil ? .head : .tail)
+            }
+        }
+        .padding(.horizontal, 8)
+        .frame(height: QuickOpenView.rowHeight)
+        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(fill))
+        .contentShape(Rectangle())
+        .onHover { hover.value = $0 }
+    }
+
+    private var fill: Color {
+        if isHighlighted { return Color.accentColor.opacity(0.22) }
+        return hover.value ? Color.primary.opacity(0.07) : .clear
     }
 }

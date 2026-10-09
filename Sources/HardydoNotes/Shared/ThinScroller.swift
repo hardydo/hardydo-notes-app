@@ -22,7 +22,6 @@ final class ThinScroller: NSScroller {
     }
 }
 
-/// Swaps the scroll bar of the SwiftUI scroll view it sits in for a `ThinScroller`.
 struct ThinScrollBar: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView { Installer() }
 

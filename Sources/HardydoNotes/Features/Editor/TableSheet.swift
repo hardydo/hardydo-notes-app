@@ -5,8 +5,14 @@ import SwiftUI
 struct TableSheet: View {
     let insert: (_ rows: Int, _ columns: Int) -> Void
     @Environment(\.dismiss) private var dismiss
-    @AppStorage("tableRows", store: AppPaths.defaults) private var rows = 2
-    @AppStorage("tableColumns", store: AppPaths.defaults) private var columns = 2
+    @AppStorage private var rows: Int
+    @AppStorage private var columns: Int
+
+    init(preferences: Preferences, insert: @escaping (_ rows: Int, _ columns: Int) -> Void) {
+        self.insert = insert
+        _rows = AppStorage(wrappedValue: 2, Preferences.Key.tableRows, store: preferences.defaults)
+        _columns = AppStorage(wrappedValue: 2, Preferences.Key.tableColumns, store: preferences.defaults)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {

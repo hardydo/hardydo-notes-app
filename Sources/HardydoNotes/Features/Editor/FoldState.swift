@@ -7,18 +7,23 @@ import HardydoNotesCore
  */
 @MainActor
 final class FoldState: NSObject, @preconcurrency NSLayoutManagerDelegate {
-    weak var textView: NSTextView?
+    weak var textView: CodeTextView?
     var zoom: CGFloat = 1
     var onChange: () -> Void = {}
     private(set) var regions: [Int: Int] = [:]
     /// Every fold, sorted by location; a fold nested in another keeps its own state.
     private var folded: [NSRange] = [] {
-        didSet { outer = Self.outermost(folded) }
+        didSet {
+            outer = Self.outermost(folded)
+            headers = Set(folded.map(\.location))
+        }
     }
+    private var headers: Set<Int> = []
     /// The folds that decide what shows: sorted and never overlapping, so lookups can binary-search.
     private var outer: [NSRange] = []
 
     private var text: NSString { (textView?.string ?? "") as NSString }
+    private var lines: LineIndex { textView?.lines ?? LineIndex("") }
 
     private static func outermost(_ ranges: [NSRange]) -> [NSRange] {
         var result: [NSRange] = []
@@ -42,8 +47,9 @@ final class FoldState: NSObject, @preconcurrency NSLayoutManagerDelegate {
     func setRegions(_ list: [FoldRegion]) {
         regions = Dictionary(list.map { ($0.startLine, $0.endLine) }, uniquingKeysWith: max)
         if !folded.isEmpty {
-            let starts = CodeFolding.lineStarts(text)
-            let headers = Set(regions.keys.filter { $0 < starts.count }.map { contentsEnd(ofLineAt: starts[$0]) })
+            let lines = lines
+            let text = text
+            let headers = Set(regions.keys.filter { $0 < lines.count }.map { lines.contentsEnd(ofLine: $0, in: text) })
             let stale = folded.filter { !headers.contains($0.location) }
             if let first = stale.first {
                 set(folded.filter { headers.contains($0.location) }, touching: stale.reduce(first) { NSUnionRange($0, $1) })
@@ -52,20 +58,14 @@ final class FoldState: NSObject, @preconcurrency NSLayoutManagerDelegate {
         onChange()
     }
 
-    private func contentsEnd(ofLineAt location: Int) -> Int {
-        var end = 0
-        text.getLineStart(nil, end: nil, contentsEnd: &end, for: NSRange(location: location, length: 0))
-        return end
-    }
-
-    private func range(forLine line: Int, starts: [Int]) -> NSRange? {
-        guard let endLine = regions[line], endLine < starts.count else { return nil }
-        let start = contentsEnd(ofLineAt: starts[line])
-        let end = contentsEnd(ofLineAt: starts[endLine])
+    private func range(forLine line: Int) -> NSRange? {
+        let lines = lines
+        guard let endLine = regions[line], endLine < lines.count else { return nil }
+        let start = lines.contentsEnd(ofLine: line, in: text)
+        let end = lines.contentsEnd(ofLine: endLine, in: text)
         return end > start ? NSRange(location: start, length: end - start) : nil
     }
 
-    /// The outer fold hiding this character, if any.
     func fold(containing index: Int) -> NSRange? {
         let found = firstOuter(endingAfter: index)
         return found < outer.count && outer[found].location <= index ? outer[found] : nil
@@ -77,19 +77,18 @@ final class FoldState: NSObject, @preconcurrency NSLayoutManagerDelegate {
         return found < outer.count && outer[found].location < location ? outer[found] : nil
     }
 
-    func isFolded(lineStart: Int) -> Bool {
-        let end = contentsEnd(ofLineAt: lineStart)
-        return folded.contains { $0.location == end }
+    /// Whether the 0-based line heads a fold.
+    func isFolded(line: Int) -> Bool {
+        !headers.isEmpty && headers.contains(lines.contentsEnd(ofLine: line, in: text))
     }
 
     func toggle(line: Int) {
-        let starts = CodeFolding.lineStarts(text)
-        guard line >= 0, line < starts.count else { return }
-        let header = contentsEnd(ofLineAt: starts[line])
+        guard line >= 0, line < lines.count else { return }
+        let header = lines.contentsEnd(ofLine: line, in: text)
         let open = folded.filter { $0.location == header }
         if let first = open.first {
             set(folded.filter { $0.location != header }, touching: open.reduce(first) { NSUnionRange($0, $1) })
-        } else if let range = range(forLine: line, starts: starts) {
+        } else if let range = range(forLine: line) {
             add([range])
         }
     }
@@ -97,24 +96,22 @@ final class FoldState: NSObject, @preconcurrency NSLayoutManagerDelegate {
     /// Folds the innermost block around the caret, as ⌥⌘[ does in VS Code.
     func foldAtCaret() {
         guard let caret = textView?.selectedRange().location else { return }
-        let starts = CodeFolding.lineStarts(text)
-        let line = CodeFolding.line(of: caret, in: starts)
+        let line = lines.line(at: caret)
         let candidates = regions.filter { $0.key <= line && line <= $0.value }
-        guard let inner = candidates.max(by: { $0.key < $1.key }), let range = range(forLine: inner.key, starts: starts), !folded.contains(range) else { return }
+        guard let inner = candidates.max(by: { $0.key < $1.key }), let range = range(forLine: inner.key), !folded.contains(range) else { return }
         add([range])
     }
 
     func unfoldAtCaret() {
         guard let caret = textView?.selectedRange().location else { return }
-        let lineEnd = contentsEnd(ofLineAt: caret)
+        let lineEnd = lines.contentsEnd(ofLine: lines.line(at: caret), in: text)
         let hit = folded.filter { $0.location == lineEnd || ($0.location < caret && caret <= NSMaxRange($0)) }
         guard let first = hit.first else { return }
         set(folded.filter { !hit.contains($0) }, touching: hit.reduce(first) { NSUnionRange($0, $1) })
     }
 
     func foldAll() {
-        let starts = CodeFolding.lineStarts(text)
-        add(regions.keys.compactMap { range(forLine: $0, starts: starts) })
+        add(regions.keys.compactMap { range(forLine: $0) })
     }
 
     func unfoldAll() {
@@ -149,9 +146,11 @@ final class FoldState: NSObject, @preconcurrency NSLayoutManagerDelegate {
      Edits before a fold move it and edits within its header line keep it, unless they add a line break there.
      Anything reaching into the hidden lines, or their last line break, opens it.
      */
-    func textEdited(_ edited: NSRange, changeInLength delta: Int) {
+    func textEdited(_ edited: NSRange, changeInLength delta: Int, lines change: (first: Int, last: Int, added: Int)) {
         let inserted = text.substring(with: edited)
-        if delta < 0 || inserted.contains(where: \.isNewline) { regions = [:] }
+        if delta < 0 || change.added != 0 {
+            regions = CodeFolding.shiftRegions(regions, editedLines: change.first, through: change.last, lineDelta: change.added)
+        }
         guard !folded.isEmpty else { return }
         let old = NSRange(location: edited.location, length: edited.length - delta)
         var kept: [NSRange] = []
@@ -160,7 +159,7 @@ final class FoldState: NSObject, @preconcurrency NSLayoutManagerDelegate {
             let before = old.length == 0 ? old.location <= fold.location : NSMaxRange(old) <= fold.location
             if before {
                 let moved = NSRange(location: fold.location + delta, length: fold.length)
-                let header = text.lineRange(for: NSRange(location: moved.location, length: 0)).location
+                let header = lines.starts[lines.line(at: moved.location)]
                 if NSMaxRange(edited) > header, inserted.contains(where: \.isNewline) {
                     opened.append(moved)
                 } else {
@@ -182,7 +181,8 @@ final class FoldState: NSObject, @preconcurrency NSLayoutManagerDelegate {
     func adjustSelection(from old: NSRange, to new: NSRange) -> NSRange {
         guard new.length == 0, let fold = hidesLine(at: new.location) else { return new }
         guard new.location < NSMaxRange(fold), new.location > old.location else { return NSRange(location: fold.location, length: 0) }
-        let after = NSMaxRange(fold) < text.length ? NSMaxRange(text.lineRange(for: NSRange(location: NSMaxRange(fold), length: 0))) : text.length
+        let next = lines.line(at: NSMaxRange(fold)) + 1
+        let after = next < lines.count ? lines.starts[next] : text.length
         return NSRange(location: after, length: 0)
     }
 
@@ -195,7 +195,7 @@ final class FoldState: NSObject, @preconcurrency NSLayoutManagerDelegate {
         guard let textView, let layoutManager = textView.layoutManager else { return }
         let length = text.length
         let start = min(range.location, length)
-        let lineStart = text.lineRange(for: NSRange(location: start, length: 0)).location
+        let lineStart = lines.starts[lines.line(at: start)]
         let touched = NSRange(location: lineStart, length: min(NSMaxRange(range) + 1, length) - lineStart)
         layoutManager.invalidateGlyphs(forCharacterRange: touched, changeInLength: 0, actualCharacterRange: nil)
         layoutManager.invalidateLayout(forCharacterRange: touched, actualCharacterRange: nil)
@@ -203,7 +203,7 @@ final class FoldState: NSObject, @preconcurrency NSLayoutManagerDelegate {
         onChange()
     }
 
-    private var badgeFont: NSFont { MarkdownTheme.baseFont(zoom) }
+    private var badgeFont: NSFont { EditorTheme.baseFont(zoom) }
 
     var badgeWidth: CGFloat {
         ("⋯" as NSString).size(withAttributes: [.font: badgeFont]).width + badgeFont.pointSize
@@ -216,11 +216,10 @@ final class FoldState: NSObject, @preconcurrency NSLayoutManagerDelegate {
         let position = layoutManager.location(forGlyphAt: glyph)
         let font = badgeFont
         let origin = textView.textContainerOrigin
-        let top = line.minY + MarkdownTheme.baselineOffset(zoom) - ceil(font.ascender) - 1
+        let top = line.minY + EditorTheme.baselineOffset(zoom) - ceil(font.ascender) - 1
         return NSRect(x: line.minX + position.x + origin.x + 2, y: top + origin.y, width: badgeWidth - 4, height: ceil(font.ascender - font.descender) + 2)
     }
 
-    /// The outer folds whose header sits in this part of the view.
     private func outerFolds(in rect: NSRect) -> ArraySlice<NSRange> {
         guard let textView, let layoutManager = textView.layoutManager, let container = textView.textContainer, !outer.isEmpty else { return [] }
         let origin = textView.textContainerOrigin

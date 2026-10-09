@@ -9,11 +9,11 @@ struct TabBar: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 0) {
                     ForEach(model.tabList.ids, id: \.self) { id in
-                        if let note = model.store.note(id) {
+                        if let note = model.store.note(id)?.summary {
                             TabItem(
                                 note: note,
                                 isActive: model.selection == id,
-                                isPreview: model.previewTab == id,
+                                isTransient: model.transientTab == id,
                                 isPinned: model.isTabPinned(id),
                                 model: model
                             )
@@ -40,9 +40,9 @@ struct TabBar: View {
 
 /// One tab. Pinned tabs show a pin where others show ✕, and they ignore ⌘W and the middle button, as in VS Code.
 private struct TabItem: View, Equatable {
-    let note: Note
+    let note: NoteSummary
     let isActive: Bool
-    let isPreview: Bool
+    let isTransient: Bool
     let isPinned: Bool
     let model: AppModel
     @StateObject private var hover = ViewState(false)
@@ -51,22 +51,22 @@ private struct TabItem: View, Equatable {
 
     nonisolated static func == (lhs: TabItem, rhs: TabItem) -> Bool {
         MainActor.assumeIsolated {
-            lhs.note.title == rhs.note.title && lhs.note.localFile?.path == rhs.note.localFile?.path
-                && lhs.isActive == rhs.isActive && lhs.isPreview == rhs.isPreview && lhs.isPinned == rhs.isPinned
+            lhs.note.title == rhs.note.title && lhs.note.filePath == rhs.note.filePath
+                && lhs.isActive == rhs.isActive && lhs.isTransient == rhs.isTransient && lhs.isPinned == rhs.isPinned
         }
     }
 
     var body: some View {
         HStack(spacing: 6) {
-            if note.localFile != nil {
+            if note.filePath != nil {
                 Image(systemName: "doc")
                     .font(.system(size: 11))
                     .foregroundStyle(isActive ? Color.accentColor : .secondary)
-                    .help(note.localFile?.path ?? "")
+                    .help(note.filePath ?? "")
             }
             Text(note.title)
                 .font(.system(size: 12, weight: isActive ? .medium : .regular))
-                .italic(isPreview)
+                .italic(isTransient)
                 .lineLimit(1)
                 .foregroundStyle(isActive ? .primary : .secondary)
             if isPinned {
@@ -80,9 +80,14 @@ private struct TabItem: View, Equatable {
                 .buttonStyle(.icon)
                 .help("Unpin Tab")
             } else {
-                HoverCloseButton(isVisible: isActive || isHovered, size: 16, help: "Close Tab (⌘W)") {
-                    model.closeTab(note.id)
+                ZStack {
+                    if isActive || isHovered {
+                        HoverCloseButton(size: 16, help: "Close Tab (⌘W)") {
+                            model.closeTab(note.id)
+                        }
+                    }
                 }
+                .frame(width: 16, height: 16)
             }
         }
         .padding(.leading, 12)
@@ -105,25 +110,25 @@ private struct TabItem: View, Equatable {
                 model.tabUnderPointer = nil
             }
         }
-        .help(note.localFile?.path ?? note.title)
-        .contextMenu { TabContextMenu(model: model, id: note.id, isPreview: isPreview, isPinned: isPinned) }
+        .help(note.filePath ?? note.title)
+        .contextMenu { TabContextMenu(model: model, id: note.id, isTransient: isTransient, isPinned: isPinned) }
     }
 }
 
 private struct TabContextMenu: View {
     let model: AppModel
     let id: Note.ID
-    let isPreview: Bool
+    let isTransient: Bool
     let isPinned: Bool
 
     var body: some View {
         Button(isPinned ? "Unpin Tab" : "Pin Tab") { model.setTabPinned(id, !isPinned) }
-        if isPreview {
+        if isTransient {
             Button("Keep Tab Open") { model.keepTab(id) }
         }
-        if let note = model.store.note(id) {
+        if let note = model.store.note(id)?.summary {
             Button(note.isLocked ? "Unlock" : "Lock (Read-Only)") { model.setLocked(id, !note.isLocked) }
-            if note.localFile == nil {
+            if note.filePath == nil {
                 Button("Rename…") { model.requestRename(id) }
                     .disabled(note.isLocked)
             }

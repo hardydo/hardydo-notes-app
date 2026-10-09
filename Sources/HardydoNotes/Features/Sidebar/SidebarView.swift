@@ -3,131 +3,235 @@ import SwiftUI
 
 struct SidebarView: View {
     @Bindable var model: AppModel
+
+    // Resizing re-runs the reader's content, which compares equal, so the list is not rebuilt for every frame of a resize.
+    var body: some View {
+        GeometryReader { geometry in
+            SidebarContent(model: model, topInset: geometry.safeAreaInsets.top)
+        }
+    }
+}
+
+private struct SidebarContent: View {
+    let model: AppModel
+    let topInset: CGFloat
     @FocusState private var isListFocused: Bool
     @FocusState private var isSearchFocused: Bool
+    @StateObject private var listTop = ObservedState(CGFloat(0))
 
     // A plain stack instead of List: List's native highlight turns grey once the editor has focus, and its onMove never starts while rows handle taps.
     var body: some View {
-        GeometryReader { geometry in
-            ScrollViewReader { proxy in
-                VStack(spacing: 0) {
-                    Group {
-                        if model.isSearchingAll {
-                            GlobalSearchField(model: model, isFocused: $isSearchFocused)
+        ScrollViewReader { proxy in
+            VStack(spacing: 0) {
+                Group {
+                    if model.globalSearch.isShown {
+                        GlobalSearchField(model: model, search: model.globalSearch, isFocused: $isSearchFocused)
+                    } else {
+                        header
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.top, topInset + 6)
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        if model.globalSearch.isShown {
+                            GlobalSearchResults(model: model)
                         } else {
-                            header
+                            SidebarList(model: model) { isListFocused = true }
                         }
                     }
+                    .overlayPreferenceValue(GroupBarKey.self) { items in
+                        GeometryReader { proxy in GroupBars(model: model, items: items, proxy: proxy) }
+                            .allowsHitTesting(false)
+                    }
+                    .coordinateSpace(.named("sidebar"))
+                    .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named(FileDrop.space)).minY } action: { listTop.value = $0 }
+                    .background(ThinScrollBar())
+                    .background(ReorderScrollAnchor(sessions: [model.sidebarReorder, model.fileReorder]))
                     .padding(.horizontal, 8)
-                    .padding(.top, geometry.safeAreaInsets.top + 6)
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 0) {
-                            if model.isSearchingAll {
-                                GlobalSearchResults(model: model)
-                            } else {
-                                list
-                            }
-                        }
-                        .overlayPreferenceValue(GroupBarKey.self) { items in
-                            GeometryReader { proxy in GroupBars(model: model, items: items, proxy: proxy) }
-                                .allowsHitTesting(false)
-                        }
-                        .coordinateSpace(.named("sidebar"))
-                        .background(ThinScrollBar())
-                        .padding(.horizontal, 8)
-                        .padding(.bottom, 6)
-                    }
+                    .padding(.bottom, 6)
                 }
-                // The sidebar scroll view applies the toolbar inset twice on this macOS, leaving a gap; the toolbar height is padded in by hand instead.
-                .ignoresSafeArea(.container, edges: .top)
-                .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-                    model.openDropped(providers, at: model.store.notes.count)
-                    return true
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+                    model.sidebarReorder.viewport = frame
+                    model.fileReorder.viewport = frame
                 }
-                .focusable()
-                .focused($isListFocused)
-                .focusEffectDisabled()
-                .onMoveCommand { direction in
-                    switch direction {
-                    case .up: model.moveSelection(by: -1)
-                    case .down: model.moveSelection(by: 1)
-                    default: break
-                    }
+            }
+            // The sidebar scroll view applies the toolbar inset twice on this macOS, leaving a gap; the toolbar height is padded in by hand instead.
+            .ignoresSafeArea(.container, edges: .top)
+            .coordinateSpace(.named(FileDrop.space))
+            .onDrop(of: [.fileURL], delegate: FileDrop(model: model, listTop: listTop))
+            .background(SelectionScroller(model: model, proxy: proxy))
+            .focusable()
+            .focused($isListFocused)
+            .focusEffectDisabled()
+            .onMoveCommand { direction in
+                switch direction {
+                case .up: model.moveSelection(by: -1)
+                case .down: model.moveSelection(by: 1)
+                default: break
                 }
-                .onDeleteCommand {
-                    if model.visibleNotes.contains(where: { $0.id == model.selection }) { model.requestDelete(model.selection) }
-                }
-                .onChange(of: model.selection) { _, id in
-                    if let id, !model.isSearchingAll { withAnimation { proxy.scrollTo(id) } }
-                }
-                .onChange(of: model.searchFocusRequest) { isSearchFocused = true }
-                .onAppear {
-                    if model.isSearchingAll { isSearchFocused = true }
-                }
+            }
+            .onDeleteCommand {
+                if model.visibleNotes.contains(where: { $0.id == model.selection }) { model.requestDelete(model.selection) }
+            }
+            .onChange(of: model.globalSearch.focusRequest) { isSearchFocused = true }
+            .onAppear {
+                if model.globalSearch.isShown { isSearchFocused = true }
             }
         }
     }
 
     private var header: some View {
         // At one point size the solid magnifier and the tall trash look bigger than the open square of the pencil.
-        SectionHeader(title: "Hardydo Notes") {
+        SectionHeader(title: AppInfo.name) {
             Button { model.openGlobalSearch() } label: { Image(systemName: "magnifyingglass").font(.system(size: 12.5)) }
                 .help("Search All Notes (⇧⌘F)")
             Button { model.isClearingEmptyNotes = true } label: { Image(systemName: "trash").font(.system(size: 12)) }
                 .help("Delete Empty Notes…")
-                .disabled(model.store.emptyNotes.isEmpty)
+                .disabled(!model.store.hasEmptyNotes)
             Button { model.newNote() } label: { Image(systemName: "square.and.pencil") }
                 .help("New Note (⌘N)")
         }
     }
+}
 
-    @ViewBuilder
-    private var list: some View {
+/// The notes and groups. Each row is compared by what it shows, so a change redraws only the rows it touches.
+private struct SidebarList: View {
+    let model: AppModel
+    let focusList: () -> Void
+
+    var body: some View {
         let rows = model.groups.rows(for: model.store.appNotes)
         ForEach(rows) { row in
-            switch row {
-            case .header(let group):
-                GroupHeader(model: model, group: group)
-                    .padding(.vertical, 2)
-                    .reorderable(group.id, in: model.sidebarReorder, plan: { model.sidebarPlan(lifting: group.id) }, onClick: { _ in
-                        model.toggleGroup(group.id)
-                    })
-            case .note(let note, let group):
-                GroupLane(model: model, id: note.id, group: group) {
-                    noteRow(note)
-                        .reorderable(note.id, in: model.sidebarReorder, plan: { model.sidebarPlan(lifting: note.id) }, onPress: {
-                            actions.select(note.id)
-                        }, onClick: { count in
-                            if count == 2 { actions.keep(note.id) }
-                        })
+            LiftLayer(cell: model.sidebarReorder.cell(row.id)) {
+                switch row {
+                case .header(let group):
+                    SidebarGroupRow(model: model, group: group).equatable()
+                case .note(let note, let group):
+                    SidebarNoteRow(model: model, note: note, group: group, focusList: focusList).equatable()
                 }
-                .id(note.id)
             }
         }
+        .onChange(of: rows.map(\.id)) { model.sidebarReorder.cancel() }
         let files = model.store.localFileNotes
         if !files.isEmpty {
             SectionHeader(title: "Open Files") { EmptyView() }
                 .padding(.top, 8)
             ForEach(files) { note in
-                noteRow(note)
-                    .reorderable(note.id, in: model.fileReorder, plan: { model.filePlan(lifting: note.id) }, onPress: {
-                        actions.select(note.id)
-                    }, onClick: { count in
-                        if count == 2 { actions.keep(note.id) }
-                    })
-                    .id(note.id)
+                LiftLayer(cell: model.fileReorder.cell(note.id)) {
+                    SidebarFileRow(model: model, note: note.summary, focusList: focusList).equatable()
+                }
             }
+            .onChange(of: files.map(\.id)) { model.fileReorder.cancel() }
         }
     }
+}
 
-    private var actions: NoteRowActions {
-        NoteRowActions(model: model) { isListFocused = true }
+/*
+ Raises a lifted row above the rows it passes. A zIndex set inside an equatable row never reaches the stack, so it
+ is set out here, where only this layer redraws when the row is lifted.
+ */
+private struct LiftLayer<Content: View>: View {
+    let cell: ReorderCell
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        content.zIndex(cell.lift != nil ? 1 : 0)
+    }
+}
+
+private struct SidebarGroupRow: View, Equatable {
+    let model: AppModel
+    let group: NoteGroup
+
+    nonisolated static func == (lhs: SidebarGroupRow, rhs: SidebarGroupRow) -> Bool {
+        MainActor.assumeIsolated { lhs.group == rhs.group }
     }
 
-    private func noteRow(_ note: Note) -> some View {
-        NoteRow(note: note, isSelected: model.selection == note.id, actions: actions)
-            .equatable()
+    var body: some View {
+        GroupHeader(model: model, group: group)
+            .padding(.vertical, 2)
+            .reorderable(group.id, in: model.sidebarReorder, plan: { [model, id = group.id] in model.sidebarPlan(lifting: id) }, onClick: { [model, id = group.id] _ in
+                model.toggleGroup(id)
+            })
+    }
+}
+
+private struct SidebarNoteRow: View, Equatable {
+    let model: AppModel
+    let note: NoteSummary
+    let group: NoteGroup?
+    let focusList: () -> Void
+
+    nonisolated static func == (lhs: SidebarNoteRow, rhs: SidebarNoteRow) -> Bool {
+        MainActor.assumeIsolated { lhs.note == rhs.note && lhs.group == rhs.group }
+    }
+
+    var body: some View {
+        let actions = NoteRowActions(model: model, focusList: focusList)
+        GroupLane(model: model, id: note.id, group: group) {
+            NoteRow(note: note, state: model.rowState(note.id), actions: actions)
+                .padding(.vertical, 1)
+                .reorderable(note.id, in: model.sidebarReorder, plan: { [model, id = note.id] in model.sidebarPlan(lifting: id) }, onPress: {
+                    actions.select(note.id)
+                }, onClick: { count in
+                    if count == 2 { actions.keep(note.id) }
+                })
+        }
+        .id(note.id)
+    }
+}
+
+private struct SidebarFileRow: View, Equatable {
+    let model: AppModel
+    let note: NoteSummary
+    let focusList: () -> Void
+
+    nonisolated static func == (lhs: SidebarFileRow, rhs: SidebarFileRow) -> Bool {
+        MainActor.assumeIsolated { lhs.note == rhs.note }
+    }
+
+    var body: some View {
+        let actions = NoteRowActions(model: model, focusList: focusList)
+        NoteRow(note: note, state: model.rowState(note.id), actions: actions)
             .padding(.vertical, 1)
+            .reorderable(note.id, in: model.fileReorder, plan: { [model, id = note.id] in model.filePlan(lifting: id) }, onPress: {
+                actions.select(note.id)
+            }, onClick: { count in
+                if count == 2 { actions.keep(note.id) }
+            })
+            .id(note.id)
+    }
+}
+
+/// Only this view follows the selection, so selecting a note does not rebuild the sidebar around it.
+private struct SelectionScroller: View {
+    let model: AppModel
+    let proxy: ScrollViewProxy
+
+    var body: some View {
+        Color.clear.onChange(of: model.selection) { _, id in
+            guard let id, !model.globalSearch.isShown, !model.sidebarReorder.isPressed, !model.fileReorder.isPressed else { return }
+            proxy.scrollTo(id)
+        }
+    }
+}
+
+/// One drop target for the whole sidebar: a file dropped on a note's row opens just above it, anywhere else at the end.
+private struct FileDrop: DropDelegate {
+    nonisolated static let space = "sidebarRoot"
+    let model: AppModel
+    let listTop: ObservedState<CGFloat>
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [.fileURL])
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        let providers = info.itemProviders(for: [.fileURL])
+        let position = info.location.y - listTop.value
+        MainActor.assumeIsolated { model.openDropped(providers, at: model.fileDropIndex(at: position)) }
+        return true
     }
 }
 
@@ -139,15 +243,14 @@ private struct GroupLane<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
+        let cell = model.sidebarReorder.cell(id)
         content
-            .padding(.leading, isIndented ? 9 : 0)
+            .padding(.leading, isIndented(cell) ? 9 : 0)
             .anchorPreference(key: GroupBarKey.self, value: .bounds) { [GroupBarItem(id: id, group: group?.id, bounds: $0)] }
-            .zIndex(model.sidebarReorder.lifted.contains(id) ? 1 : 0)
     }
 
-    private var isIndented: Bool {
-        let session = model.sidebarReorder
-        guard session.lifted == [id], let landing = session.landing else { return group != nil }
+    private func isIndented(_ cell: ReorderCell) -> Bool {
+        guard cell.lift?.isAlone == true, let landing = model.sidebarReorder.landing else { return group != nil }
         return landing.lane != nil
     }
 }
@@ -216,46 +319,5 @@ private struct GroupBars: View {
             }
         }
         return spans
-    }
-}
-
-/// What a row does, kept apart from what it shows so rows compare by their content alone.
-@MainActor
-struct NoteRowActions {
-    let model: AppModel
-    let focusList: () -> Void
-
-    func select(_ id: Note.ID) {
-        model.selectNote(id)
-        focusList()
-    }
-
-    func keep(_ id: Note.ID) { model.keepTab(id) }
-    func remove(_ id: Note.ID) { model.requestDelete(id) }
-
-    func openFiles(_ providers: [NSItemProvider], at id: Note.ID) -> Bool {
-        model.openDropped(providers, at: model.store.notes.firstIndex { $0.id == id } ?? 0)
-        return true
-    }
-}
-
-struct SectionHeader<Actions: View>: View {
-    let title: String
-    @ViewBuilder let actions: Actions
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Text(title)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.secondary)
-            Spacer()
-            actions
-                .buttonStyle(.icon)
-                .font(.system(size: 13.5))
-        }
-        .padding(.horizontal, 8)
-        .padding(.top, 2)
-        .padding(.bottom, 4)
-        .contentShape(Rectangle())
     }
 }

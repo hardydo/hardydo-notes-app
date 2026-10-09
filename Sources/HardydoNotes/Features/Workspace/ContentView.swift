@@ -3,32 +3,24 @@ import SwiftUI
 
 struct ContentView: View {
     @Bindable var model: AppModel
-    @StateObject private var detailFrame = ViewState(CGRect.zero)
+    @StateObject private var detailFrame = ObservedState(CGRect.zero)
 
     private var store: NoteStore { model.store }
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $model.sidebarVisibility) {
+        NavigationSplitView(columnVisibility: Bindable(model.layout).sidebarVisibility) {
             SidebarView(model: model)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 260)
         } detail: {
-            detail
+            WorkspaceDetail(model: model, detailFrame: detailFrame)
         }
-        .navigationTitle(model.selectedNote?.title ?? "Hardydo Notes")
         .toolbar { WorkspaceToolbar(model: model) }
         // The toolbar title grabs presses for its own menu, so the window could not be dragged by it; the tab already names the note.
         .toolbar(removing: .title)
         // The system toolbar background starts a few points left of the sidebar divider; the detail draws its own instead so the edges line up.
         .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         // Centred over the editor side, under the view mode switcher, rather than over the whole window.
-        .overlay(alignment: .topLeading) {
-            if let mode = model.quickOpen {
-                let area = detailFrame.value
-                QuickOpenView(model: model, mode: mode, width: min(680, max(320, area.width - 48)))
-                    .frame(width: area.width)
-                    .offset(x: area.minX)
-            }
-        }
+        .overlay(alignment: .topLeading) { QuickOpenLayer(model: model, area: detailFrame) }
         .sheet(item: Binding(
             get: { model.pendingDelete.flatMap(store.note) },
             set: { if $0 == nil { model.pendingDelete = nil } }
@@ -57,7 +49,7 @@ struct ContentView: View {
             Text("Leave the name empty to use the note’s first line again.")
         }
         .sheet(isPresented: $model.isInsertingTable) {
-            TableSheet { rows, columns in model.editor.perform(.table(rows: rows, columns: columns)) }
+            TableSheet(preferences: model.preferences) { rows, columns in model.editor.perform(.table(rows: rows, columns: columns)) }
         }
         .alert(model.alert?.title ?? "", isPresented: Binding(
             get: { model.alert != nil },
@@ -77,12 +69,12 @@ struct ContentView: View {
             Text("“\(conflict.name)” was changed by another app while you were editing it here. Keeping your version overwrites the file; using the version on disk discards what you just typed.")
         }
         .alert("Storage Problem", isPresented: Binding(
-            get: { store.fileError != nil },
-            set: { if !$0 { store.dismissFileError() } }
+            get: { model.storageProblem != nil },
+            set: { if !$0 { model.dismissStorageProblem() } }
         )) {
-            Button("OK") { store.dismissFileError() }
+            Button("OK") { model.dismissStorageProblem() }
         } message: {
-            Text(store.fileError ?? "")
+            Text(model.storageProblem ?? "")
         }
     }
 
@@ -91,28 +83,36 @@ struct ContentView: View {
         let notes = count == 1 ? "1 note has" : "\(count) notes have"
         return "\(notes) no text at all and will be removed from this Mac. Notes with any text, and locked notes, are kept. This can’t be undone."
     }
+}
 
-    private var detail: some View {
+/// Everything that follows the open note, kept out of ContentView so switching notes leaves the toolbar and sheets alone.
+private struct WorkspaceDetail: View {
+    let model: AppModel
+    let detailFrame: ObservedState<CGRect>
+
+    private var store: NoteStore { model.store }
+
+    var body: some View {
         VStack(spacing: 0) {
             if !model.tabList.ids.isEmpty {
                 TabBar(model: model)
             }
-            if let note = model.selectedNote {
-                BreadcrumbBar(model: model, note: note, language: model.selectedLanguage)
-                if model.showFind {
-                    FindBar(model: model)
+            if let (note, text) = model.selectedNote.map({ ($0.summary, store.text(of: $0)) }) {
+                BreadcrumbBar(model: model, note: note, revision: text.revision, language: model.selectedLanguage)
+                if model.find.isShown {
+                    FindBar(model: model, find: model.find)
                 }
                 GeometryReader { geometry in
-                    let editorWidth = model.viewMode == .split ? geometry.size.width * model.splitRatio : geometry.size.width
+                    let editorWidth = model.viewMode == .split ? geometry.size.width * model.layout.splitRatio : geometry.size.width
                     HStack(spacing: 0) {
                         if model.viewMode != .preview {
-                            editor(note).frame(width: max(0, editorWidth))
+                            editor(note, text).frame(width: max(0, editorWidth))
                         }
                         if model.viewMode == .split {
-                            SplitDivider(width: geometry.size.width) { model.dragSplit(to: $0) } onEnd: { model.endSplitDrag() }
+                            SplitDivider(width: geometry.size.width) { model.layout.dragSplit(to: $0) } onEnd: { model.layout.endSplitDrag() }
                         }
                         if model.viewMode != .edit {
-                            PreviewView(text: note.body, language: model.selectedLanguage, zoom: model.zoom)
+                            PreviewView(text: text, language: model.selectedLanguage, zoom: model.layout.zoom, syncsScroll: model.isSyncingScroll, model: model)
                                 .background(PreviewView.pageBackground)
                                 .frame(maxWidth: .infinity)
                         }
@@ -126,19 +126,21 @@ struct ContentView: View {
         .background(Color(nsColor: .windowBackgroundColor).ignoresSafeArea())
         .overlay(alignment: .top) { Divider() }
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { detailFrame.value = $0 }
+        .background(WindowTitle(title: model.selectedNote?.title ?? AppInfo.name))
+        .task(id: model.selectedLanguageKey) { await model.refreshLanguage() }
     }
 
-    private func editor(_ note: Note) -> some View {
+    private func editor(_ note: NoteSummary, _ text: NoteText) -> some View {
         EditorView(
-            text: note.body,
+            text: text,
             language: model.selectedLanguage,
             isEditable: !note.isLocked,
-            zoom: model.zoom,
-            highlights: model.showFind ? model.findResult.ranges : [],
-            currentHighlight: model.showFind ? model.findCurrent : nil,
+            zoom: model.layout.zoom,
+            highlights: model.find.isShown ? model.find.ranges : [],
+            currentHighlight: model.find.isShown ? model.find.current : nil,
             controller: model.editor,
             onEscape: { [model] in
-                guard model.showFind else { return false }
+                guard model.find.isShown else { return false }
                 model.closeFind()
                 return true
             },
@@ -146,11 +148,39 @@ struct ContentView: View {
         ) { [store] text in
             store.updateBody(note.id, text)
         }
-        .id(note.id)
         .safeAreaInset(edge: .top, spacing: 0) {
             if note.isLocked {
                 LockedBanner { model.setLocked(note.id, false) }
             }
+        }
+    }
+}
+
+/// Reads the detail's frame itself, so resizing the window or the sidebar does not redraw the workspace around it.
+private struct QuickOpenLayer: View {
+    let model: AppModel
+    let area: ObservedState<CGRect>
+
+    var body: some View {
+        if let mode = model.quickOpen {
+            let area = area.value
+            QuickOpenView(model: model, mode: mode, width: min(680, max(320, area.width - 48)))
+                .frame(width: area.width)
+                .offset(x: area.minX)
+        }
+    }
+}
+
+// A SwiftUI navigation title rebuilds every toolbar item when it changes, so the window title is set directly.
+private struct WindowTitle: NSViewRepresentable {
+    let title: String
+
+    func makeNSView(context: Context) -> NSView { NSView() }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        let title = title
+        DispatchQueue.main.async {
+            if let window = nsView.window, window.title != title { window.title = title }
         }
     }
 }

@@ -2,7 +2,6 @@ import AppKit
 import HardydoNotesCore
 import Observation
 import SwiftUI
-import WebKit
 
 enum ViewMode: Hashable {
     case edit
@@ -26,8 +25,16 @@ struct LanguageKey: Equatable {
 final class AppModel {
     let store: NoteStore
     let editor = EditorController()
-    let defaults: UserDefaults
-    var tabList = TabList()
+    let preferences: Preferences
+    let layout: LayoutSettings
+    var tabList = TabList() {
+        didSet {
+            guard oldValue.active != tabList.active else { return }
+            if let old = oldValue.active { rowStates[old]?.isSelected = false }
+            if let new = tabList.active { rowStates[new]?.isSelected = true }
+            showLanguage()
+        }
+    }
     var viewMode = ViewMode.edit {
         // Leaving the editor tears it down inside a view update, which is no place to hand typing to the store.
         willSet { if newValue != viewMode { editor.commit() } }
@@ -37,81 +44,58 @@ final class AppModel {
     var renameText = ""
     var isClearingEmptyNotes = false
     var alert: AppAlert?
+    var groupsProblem: String?
     var isInsertingTable = false
-    private(set) var splitRatio = 0.5
-    private(set) var zoom: CGFloat = 1
-    var isScrollSynced = true
-    var sidebarVisibility = NavigationSplitViewVisibility.all
+    @ObservationIgnored var preview: PreviewPage?
     var groups = NoteGroups()
     var editingGroup: NoteGroup.ID?
     var quickOpen: QuickOpenMode?
-    var showFind = false
-    var showReplace = false
-    var findQuery = ""
-    var replaceText = ""
-    var findOptions = SearchOptions()
-    var findCurrent: NSRange?
-    var findFocusRequest = 0
-    var isSearchingAll = false
-    var globalQuery = "" {
-        didSet { if globalQuery != oldValue { collapsedResults = [] } }
-    }
-    var collapsedResults: Set<Note.ID> = []
-    var searchFocusRequest = 0
-    private var languageRevision = 0
+    let find = FindModel()
+    let globalSearch = GlobalSearchModel()
+    /// Shared by find and the search of every note.
+    var searchOptions = SearchOptions()
+    /// What the open note holds, as the editor colours it and the toolbar offers tools for it.
+    private(set) var selectedLanguage = ContentLanguage.markdown
     @ObservationIgnored let sidebarReorder = ReorderSession(axis: .vertical, space: "sidebar")
     @ObservationIgnored let fileReorder = ReorderSession(axis: .vertical, space: "sidebar")
     @ObservationIgnored let tabReorder = ReorderSession(axis: .horizontal, space: "tabs")
     @ObservationIgnored var tabUnderPointer: Note.ID?
     @ObservationIgnored var noteUnderPointer: Note.ID?
-    @ObservationIgnored var findMemo: (key: FindKey, result: FindResult)?
-    @ObservationIgnored var globalMemo: (key: GlobalKey, results: [GlobalResult])?
-    @ObservationIgnored private var languageMemo: (key: LanguageKey, language: ContentLanguage)?
-    @ObservationIgnored private var languageTask: Task<Void, Never>?
+    /// One answer per open tab, so switching back and forth between tabs never detects again.
+    @ObservationIgnored private var languages: [Note.ID: (key: LanguageKey, language: ContentLanguage)] = [:]
     @ObservationIgnored let groupsFile: JSONFile<NoteGroups>
-    @ObservationIgnored private let exporter = NoteExporter()
-    @ObservationIgnored private var started = false
-    @ObservationIgnored private var monitors: [Any] = []
-    @ObservationIgnored private var activeObserver: NSObjectProtocol?
-    @ObservationIgnored private var zoomSave: Task<Void, Never>?
-    private static let zoomRange: ClosedRange<CGFloat> = 0.6...3
-    private static let zoomKey = "zoom"
-    private static let splitRatioKey = "splitRatio"
-    static let scrollSyncKey = "scrollSync"
+    @ObservationIgnored private var rowStates: [Note.ID: RowState] = [:]
+    @ObservationIgnored var tabSaveTask: Task<Void, Never>?
+    @ObservationIgnored var groupSaveTask: Task<Void, Never>?
+    @ObservationIgnored private let exporter: NoteExporter
+    @ObservationIgnored private var inputMonitors: InputMonitors?
 
     /// Everything the first frame shows is loaded here, so the window opens with its notes and tabs already in place.
-    init(store: NoteStore, groupsFile: JSONFile<NoteGroups>, defaults: UserDefaults = .standard) {
+    init(store: NoteStore, groupsFile: JSONFile<NoteGroups>, preferences: Preferences) {
         self.store = store
         self.groupsFile = groupsFile
-        self.defaults = defaults
-        if defaults.double(forKey: Self.zoomKey) > 0 { zoom = CGFloat(defaults.double(forKey: Self.zoomKey)).clamped(to: Self.zoomRange) }
-        if defaults.double(forKey: Self.splitRatioKey) > 0 { splitRatio = Self.clampedSplit(defaults.double(forKey: Self.splitRatioKey)) }
-        if defaults.object(forKey: Self.scrollSyncKey) != nil { isScrollSynced = defaults.bool(forKey: Self.scrollSyncKey) }
+        self.preferences = preferences
+        layout = LayoutSettings(preferences: preferences)
+        exporter = NoteExporter(preferences: preferences)
         restoreTabs()
+        showLanguage()
         loadGroups()
     }
 
     func start() {
-        guard !started else { return }
-        started = true
+        guard inputMonitors == nil else { return }
         connectScrollSync()
-        activeObserver = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.store.refreshLocalFiles() }
-        }
-        monitors = [
-            NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .magnify]) { [weak self] event in
-                let handled = MainActor.assumeIsolated { self?.handleZoomGesture(event) ?? false }
-                return handled ? nil : event
-            },
-            NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                let handled = MainActor.assumeIsolated { self?.handleSidebarShortcut(event) ?? false }
-                return handled ? nil : event
-            },
-            NSEvent.addLocalMonitorForEvents(matching: .otherMouseUp) { [weak self] event in
-                let handled = MainActor.assumeIsolated { event.buttonNumber == 2 && (self?.middleClickTab() == true || self?.middleClickNote() == true) }
-                return handled ? nil : event
-            },
-        ].compactMap { $0 }
+        // Opened files are checked once the window is up, and again whenever the app comes back to the front.
+        Task { await store.refreshLocalFiles() }
+        inputMonitors = InputMonitors(
+            zoom: { [weak self] in self?.layout.zoom(by: $0) },
+            keyDown: { [weak self] in self?.cancelDrag(on: $0) == true || self?.handleSidebarShortcut($0) == true },
+            middleClick: { [weak self] in self?.middleClickTab() == true || self?.middleClickNote() == true },
+            activated: { [weak self] in
+                guard let self else { return }
+                Task { await self.store.refreshLocalFiles() }
+            }
+        )
     }
 
     /// Pending typing, notes, groups and tabs, all written before the app quits; returns what could not be saved.
@@ -119,10 +103,35 @@ final class AppModel {
     func flushAll() -> String? {
         editor.commit()
         let problem = store.saveNow()
-        let groupsProblem = groupsFile.flush().map { "Couldn’t save your groups: \($0.localizedDescription)" }
+        saveGroupsNow()
+        let groupsSaveProblem = groupsFile.flush().map { "Couldn’t save your groups: \($0.localizedDescription)" }
+        let files = store.unsavedFileNames
+        let filesProblem = files.isEmpty ? nil : "Edits to \(files.joined(separator: ", ")) haven’t reached the \(files.count == 1 ? "file" : "files") on disk. The text is still kept in the app."
         saveTabs()
-        if zoomSave != nil { defaults.set(Double(zoom), forKey: Self.zoomKey) }
-        return [problem, groupsProblem].compactMap { $0 }.joined(separator: "\n").nilIfEmpty
+        layout.flush()
+        return [problem, groupsSaveProblem, filesProblem].compactMap { $0 }.joined(separator: "\n").nilIfEmpty
+    }
+
+    /// The selection a sidebar row draws. The registry is not observed, so asking for a row's state never makes a view depend on the others.
+    func rowState(_ id: Note.ID) -> RowState {
+        if let state = rowStates[id] { return state }
+        let state = RowState(isSelected: tabList.active == id)
+        rowStates[id] = state
+        return state
+    }
+
+    /// Groups and tabs refer to notes by id, so they are only pruned and saved against a notes list that loaded whole.
+    var persistsSidebarState: Bool {
+        store.loadedCleanly
+    }
+
+    var storageProblem: String? {
+        store.fileError ?? groupsProblem
+    }
+
+    func dismissStorageProblem() {
+        store.dismissFileError()
+        groupsProblem = nil
     }
 
     var selectedNote: Note? {
@@ -133,81 +142,47 @@ final class AppModel {
      Detecting the content type reads the whole note, so it runs once when a note opens and, while typing,
      again in the background after a pause; the editor keeps the last answer until then.
      */
-    var selectedLanguage: ContentLanguage {
-        _ = languageRevision
-        guard let note = selectedNote else { return .markdown }
-        let key = LanguageKey(note: note.id, modifiedAt: note.modifiedAt, path: note.localFile?.path)
-        if let languageMemo {
-            if languageMemo.key == key { return languageMemo.language }
-            if languageMemo.key.note == key.note, languageMemo.key.path == key.path {
-                detectLanguageLater(note, key: key)
-                return languageMemo.language
-            }
-        }
-        let language = note.language
-        languageMemo = (key, language)
-        return language
+    var selectedLanguageKey: LanguageKey? {
+        selectedNote.map { LanguageKey(note: $0.id, modifiedAt: $0.modifiedAt, path: $0.localFile?.path) }
     }
 
-    private func detectLanguageLater(_ note: Note, key: LanguageKey) {
-        languageTask?.cancel()
-        languageTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(300))
-            guard !Task.isCancelled else { return }
-            let language = await Task.detached(priority: .utility) { note.language }.value
-            guard !Task.isCancelled, let self else { return }
-            let changed = self.languageMemo?.language != language
-            self.languageMemo = (key, language)
-            if changed { self.languageRevision += 1 }
-        }
+    /// A note seen before shows its last answer; a new one is detected at once, so its first frame is already coloured.
+    func showLanguage() {
+        guard let note = selectedNote, let key = selectedLanguageKey else { return setLanguage(.markdown) }
+        if let known = languages[note.id], known.key.path == key.path { return setLanguage(known.language) }
+        languages[note.id] = (key, note.language)
+        setLanguage(note.language)
     }
 
-    /// Notes kept in the app, then files opened from disk, in sidebar order.
+    func refreshLanguage() async {
+        guard let note = selectedNote, let key = selectedLanguageKey, languages[note.id]?.key != key else { return }
+        do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
+        let language = await Task.detached(priority: .utility) { note.language }.value
+        guard !Task.isCancelled, selection == note.id else { return }
+        languages[note.id] = (key, language)
+        setLanguage(language)
+    }
+
+    private func setLanguage(_ language: ContentLanguage) {
+        if selectedLanguage != language { selectedLanguage = language }
+    }
+
+    func keepLanguages(for notes: Set<Note.ID>) {
+        languages = languages.filter { notes.contains($0.key) }
+    }
+
     var visibleNotes: [Note] {
         groups.visibleNotes(store.appNotes) + store.localFileNotes
     }
 
     func moveSelection(by offset: Int) {
-        let notes = visibleNotes
-        guard !notes.isEmpty else { return }
-        if let current = notes.firstIndex(where: { $0.id == selection }) {
-            selectNote(notes[min(max(current + offset, 0), notes.count - 1)].id)
-            return
-        }
-        // The open note may sit in a collapsed group: step from its place in the full list to the next note shown.
-        let all = groups.orderedNotes(store.appNotes) + store.localFileNotes
-        guard let position = all.firstIndex(where: { $0.id == selection }) else { return selectNote(notes[0].id) }
-        let shown = Set(notes.map(\.id))
-        let ahead = offset > 0 ? Array(all[(position + 1)...]) : all[..<position].reversed()
-        selectNote((ahead.first { shown.contains($0.id) } ?? (offset > 0 ? notes[notes.count - 1] : notes[0])).id)
+        guard let id = groups.step(from: selection, by: offset, appNotes: store.appNotes, fileNotes: store.localFileNotes) else { return }
+        selectNote(id)
     }
 
-    /// Shows a note in a tab: an open tab is reused, otherwise it opens in the preview tab unless `keep` is set.
+    /// Shows a note in a tab: an open tab is reused, otherwise it opens in the transient tab unless `keep` is set.
     func selectNote(_ id: Note.ID, keep: Bool = false) {
         changeTabs { $0.open(id, keep: keep) }
-    }
-
-    func setZoom(_ value: CGFloat) {
-        zoom = value.clamped(to: Self.zoomRange)
-        zoomSave?.cancel()
-        zoomSave = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(500))
-            guard !Task.isCancelled, let self else { return }
-            self.defaults.set(Double(self.zoom), forKey: Self.zoomKey)
-            self.zoomSave = nil
-        }
-    }
-
-    private func handleZoomGesture(_ event: NSEvent) -> Bool {
-        guard event.type == .magnify || event.modifierFlags.contains(.command),
-              let hit = event.window?.contentView?.hitTest(event.locationInWindow),
-              sequence(first: hit, next: \.superview).contains(where: { $0 is NSTextView || $0 is WKWebView })
-        else { return false }
-        let factor = event.type == .magnify
-            ? 1 + event.magnification
-            : exp(event.scrollingDeltaY * (event.hasPreciseScrollingDeltas ? 0.005 : 0.05))
-        setZoom(zoom * factor)
-        return true
     }
 
     func open(_ urls: [URL], at position: Int = 0) {
@@ -232,22 +207,9 @@ final class AppModel {
         open(panel.urls)
     }
 
-    private static func clampedSplit(_ ratio: Double) -> Double {
-        min(max(ratio, 0.15), 0.85)
-    }
-
-    func dragSplit(to ratio: Double) {
-        splitRatio = Self.clampedSplit(ratio)
-    }
-
-    func endSplitDrag() {
-        defaults.set(splitRatio, forKey: Self.splitRatioKey)
-    }
-
     func exportCurrent() {
         editor.commit()
         guard let note = selectedNote else { return }
-        store.saveNow()
         let language = selectedLanguage
         Task {
             do {
@@ -259,7 +221,7 @@ final class AppModel {
     }
 
     var canFormatDocument: Bool {
-        selectedNote?.isLocked == false && selectedLanguage == .json && viewMode != .preview
+        canEditText && selectedLanguage == .json
     }
 
     /// Pretty-prints a JSON note through the editor, so ⌘Z brings the old text back; Preview mode has no editor, so it is left out.
@@ -287,7 +249,7 @@ final class AppModel {
     }
 
     func newNote() {
-        if viewMode == .preview { viewMode = .edit }
+        leavePreview(to: .edit)
         selectNote(store.createNote(), keep: true)
     }
 
@@ -298,7 +260,7 @@ final class AppModel {
         notesRemoved()
     }
 
-    /// The middle button on a sidebar row does what its ✕ does, as it closes a tab.
+    /// The middle button on a sidebar row does what its ✕ does, as the middle button on a tab closes it.
     func middleClickNote() -> Bool {
         guard let id = noteUnderPointer, store.note(id) != nil else { return false }
         noteUnderPointer = nil
@@ -340,7 +302,6 @@ final class AppModel {
         notesRemoved()
     }
 
-    /// Tabs and groups of notes that are gone go with them.
     private func notesRemoved() {
         pruneTabs()
         pruneGroups()
@@ -349,10 +310,4 @@ final class AppModel {
 
 private extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
-}
-
-extension CGFloat {
-    func clamped(to range: ClosedRange<CGFloat>) -> CGFloat {
-        Swift.min(Swift.max(self, range.lowerBound), range.upperBound)
-    }
 }

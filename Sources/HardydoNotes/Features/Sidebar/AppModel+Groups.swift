@@ -3,9 +3,11 @@ import Foundation
 
 extension AppModel {
     func loadGroups() {
-        guard let saved = groupsFile.load() else { return }
+        let loaded = groupsFile.load()
+        groupsProblem = loaded.problem
+        guard let saved = loaded.value else { return }
         groups = saved
-        pruneGroups()
+        if persistsSidebarState { pruneGroups() }
     }
 
     func pruneGroups() {
@@ -17,12 +19,28 @@ extension AppModel {
         if let editingGroup, groups.group(editingGroup) == nil { self.editingGroup = nil }
     }
 
-    func changeGroups(_ change: (inout NoteGroups) -> Void) {
+    /// Changes show at once; `saveAfter` holds the save back, so typing a name writes the file once it pauses.
+    func changeGroups(saveAfter delay: Duration? = nil, _ change: (inout NoteGroups) -> Void) {
         var updated = groups
         change(&updated)
         guard updated != groups else { return }
         groups = updated
-        groupsFile.save(groups)
+        groupSaveTask?.cancel()
+        guard let delay else { return saveGroupsNow() }
+        groupSaveTask = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            self?.saveGroupsNow()
+        }
+    }
+
+    func saveGroupsNow() {
+        groupSaveTask?.cancel()
+        groupSaveTask = nil
+        guard persistsSidebarState else { return }
+        groupsFile.save(groups) { [weak self] error in
+            self?.groupsProblem = "Couldn’t save your groups: \(error.localizedDescription)"
+        }
     }
 
     func canGroup(_ note: Note.ID) -> Bool {
@@ -42,7 +60,9 @@ extension AppModel {
 
     func add(_ note: Note.ID, toGroup group: NoteGroup.ID) {
         guard canGroup(note) else { return }
-        placeAtEnd(of: group, note)
+        if let move = groups.insertionIndex(joining: group, for: note, in: store.notes) {
+            store.move(fromOffsets: [move.from], toOffset: move.toOffset)
+        }
         changeGroups {
             $0.add(note, to: group)
             $0.update(group) { $0.isCollapsed = false }
@@ -72,7 +92,7 @@ extension AppModel {
     }
 
     func renameGroup(_ group: NoteGroup.ID, _ name: String) {
-        changeGroups { $0.update(group) { $0.name = name } }
+        changeGroups(saveAfter: .milliseconds(300)) { $0.update(group) { $0.name = name } }
     }
 
     func setGroupColor(_ group: NoteGroup.ID, _ color: GroupColor) {
@@ -80,16 +100,9 @@ extension AppModel {
     }
 
     func newNote(inGroup group: NoteGroup.ID) {
-        if viewMode == .preview { viewMode = .edit }
+        leavePreview(to: .edit)
         let id = store.createNote()
         add(id, toGroup: group)
         selectNote(id, keep: true)
-    }
-
-    // A group shows where its first note is, so a note joining it moves next to the others instead of dragging the group along.
-    private func placeAtEnd(of group: NoteGroup.ID, _ note: Note.ID) {
-        let others = store.notes.indices.filter { store.notes[$0].id != note && groups.group(of: store.notes[$0].id)?.id == group }
-        guard let last = others.last, let from = store.notes.firstIndex(where: { $0.id == note }) else { return }
-        store.move(fromOffsets: [from], toOffset: last + 1)
     }
 }

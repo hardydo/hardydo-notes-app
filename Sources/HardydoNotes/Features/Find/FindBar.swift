@@ -2,7 +2,8 @@ import HardydoNotesCore
 import SwiftUI
 
 struct FindBar: View {
-    @Bindable var model: AppModel
+    let model: AppModel
+    @Bindable var find: FindModel
     @FocusState private var focus: Field?
 
     private enum Field {
@@ -12,10 +13,10 @@ struct FindBar: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 6) {
-            Button { model.showReplace.toggle() } label: {
+            Button { model.find.showsReplace.toggle() } label: {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 10, weight: .semibold))
-                    .rotationEffect(.degrees(model.showReplace ? 90 : 0))
+                    .rotationEffect(.degrees(model.find.showsReplace ? 90 : 0))
                     .frame(width: 16, height: 24)
                     .contentShape(Rectangle())
             }
@@ -25,7 +26,7 @@ struct FindBar: View {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
                     box {
-                        TextField("Find", text: Binding(get: { model.findQuery }, set: { model.setFindQuery($0) }))
+                        TextField("Find", text: Binding(get: { model.find.query }, set: { model.setFindQuery($0) }))
                             .focused($focus, equals: .query)
                             .onSubmit { model.findNext() }
                             .onKeyPress(.return, phases: .down) { press in
@@ -33,7 +34,7 @@ struct FindBar: View {
                                 model.findNext(forward: false)
                                 return .handled
                             }
-                        SearchOptionToggles(options: model.findOptions) { model.setFindOptions($0) }
+                        SearchOptionToggles(options: model.searchOptions) { model.setSearchOptions($0) }
                     }
                     Text(counter)
                         .font(.system(size: 11))
@@ -44,14 +45,14 @@ struct FindBar: View {
                         iconButton("chevron.up", "Previous Match (⇧⌘G, ⇧↩)") { model.findNext(forward: false) }
                         iconButton("chevron.down", "Next Match (⌘G, ↩)") { model.findNext() }
                     }
-                    .disabled(model.findResult.ranges.isEmpty)
+                    .disabled(model.find.ranges.isEmpty)
                     Spacer(minLength: 0)
                     iconButton("xmark", "Close (Esc)") { model.closeFind() }
                 }
-                if model.showReplace {
+                if model.find.showsReplace {
                     HStack(spacing: 6) {
                         box {
-                            TextField(model.findOptions.regex ? "Replace ($1, $2… refer to regex groups)" : "Replace", text: $model.replaceText)
+                            TextField(model.searchOptions.regex ? "Replace ($1, $2… refer to regex groups)" : "Replace", text: $find.replaceText)
                                 .focused($focus, equals: .replace)
                                 .onSubmit { model.replaceCurrent() }
                         }
@@ -73,21 +74,22 @@ struct FindBar: View {
         .overlay(alignment: .bottom) { Divider() }
         .onExitCommand { model.closeFind() }
         .onAppear { focus = .query }
-        .onChange(of: model.findFocusRequest) { focus = .query }
+        .onChange(of: model.find.focusRequest) { focus = .query }
+        .task(id: model.findInputs) { await model.refreshFind() }
     }
 
     private var counter: String {
-        let result = model.findResult
-        if let error = result.error { return error }
-        if result.ranges.isEmpty { return "No results" }
-        let total = result.ranges.count >= TextSearch.maxMatches ? "\(result.ranges.count)+" : "\(result.ranges.count)"
-        return model.findCurrentIndex.map { "\($0 + 1) / \(total)" } ?? "\(total) \(result.ranges.count == 1 ? "result" : "results")"
+        let find = model.find
+        if let error = find.error { return error }
+        if find.ranges.isEmpty { return "No results" }
+        let total = find.ranges.count >= TextSearch.maxMatches ? "\(find.ranges.count)+" : "\(find.ranges.count)"
+        return find.currentIndex.map { "\($0 + 1) / \(total)" } ?? "\(total) \(find.ranges.count == 1 ? "result" : "results")"
     }
 
     private var counterColor: Color {
-        let result = model.findResult
-        if result.error != nil || (result.ranges.isEmpty && !model.findQuery.isEmpty) { return .red }
-        return model.findQuery.isEmpty ? .primary : .secondary
+        let find = model.find
+        if find.error != nil || (find.ranges.isEmpty && !find.query.isEmpty) { return .red }
+        return find.query.isEmpty ? .primary : .secondary
     }
 
     private func box<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {

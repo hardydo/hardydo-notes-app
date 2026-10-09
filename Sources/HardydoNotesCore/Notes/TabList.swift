@@ -1,12 +1,12 @@
 import Foundation
 
 /*
- Open tabs like VS Code: single clicks reuse one preview tab; editing or opening to keep gives a tab of its own.
+ Open tabs like VS Code: single clicks reuse one transient tab (VS Code calls it the preview tab); editing or opening to keep gives a tab of its own.
  Pinned tabs stay first and survive the bulk close commands.
  */
 public struct TabList: Equatable, Sendable {
     public private(set) var ids: [UUID] = []
-    public private(set) var preview: UUID?
+    public private(set) var transient: UUID?
     public private(set) var active: UUID?
     public private(set) var pinnedCount = 0
     private var closed: [ClosedTab] = []
@@ -35,14 +35,14 @@ public struct TabList: Equatable, Sendable {
     public mutating func open(_ id: UUID, keep: Bool) {
         if !ids.contains(id) {
             let current = active.flatMap { ids.firstIndex(of: $0) }
-            if !keep, let preview, let index = ids.firstIndex(of: preview) {
+            if !keep, let transient, let index = ids.firstIndex(of: transient) {
                 ids[index] = id
             } else {
                 ids.insert(id, at: max(current.map { $0 + 1 } ?? ids.count, pinnedCount))
             }
-            if !keep { preview = id }
+            if !keep { transient = id }
         }
-        if keep, preview == id { preview = nil }
+        if keep, transient == id { transient = nil }
         active = id
     }
 
@@ -57,7 +57,7 @@ public struct TabList: Equatable, Sendable {
     }
 
     public mutating func keep(_ id: UUID) {
-        if preview == id { preview = nil }
+        if transient == id { transient = nil }
     }
 
     public mutating func pin(_ id: UUID) {
@@ -124,6 +124,13 @@ public struct TabList: Equatable, Sendable {
         return nil
     }
 
+    /// The places among the other tabs a dragged tab may land: pinned tabs stay among the pinned ones, the others after them.
+    public func slotRange(moving id: UUID) -> ClosedRange<Int>? {
+        guard ids.contains(id) else { return nil }
+        let pinnedOthers = pinnedCount - (isPinned(id) ? 1 : 0)
+        return isPinned(id) ? 0...pinnedOthers : pinnedOthers...(ids.count - 1)
+    }
+
     /// Applies an order worked out while dragging, as long as it keeps the same tabs and pinned ones first.
     public mutating func reorder(_ order: [UUID]) {
         guard order.count == ids.count, Set(order) == Set(ids), Set(order.prefix(pinnedCount)) == Set(pinned) else { return }
@@ -147,7 +154,7 @@ public struct TabList: Equatable, Sendable {
     private mutating func remove(at index: Int) {
         let id = ids.remove(at: index)
         if index < pinnedCount { pinnedCount -= 1 }
-        if preview == id { preview = nil }
+        if transient == id { transient = nil }
         if active == id { active = ids.isEmpty ? nil : ids[min(index, ids.count - 1)] }
     }
 }

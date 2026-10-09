@@ -118,7 +118,3 @@ struct GroupEditor: View {
         .pointerStyle(.link)
     }
 }
-
-extension NoteGroup {
-    var displayName: String { name.isEmpty ? "Group" : name }
-}

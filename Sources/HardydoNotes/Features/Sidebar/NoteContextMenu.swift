@@ -4,14 +4,14 @@ import SwiftUI
 
 struct NoteContextMenu: View {
     let model: AppModel
-    let note: Note
+    let note: NoteSummary
 
     var body: some View {
         Button("Open in New Tab") { model.selectNote(note.id, keep: true) }
         Button(note.isPinned ? "Unpin Note" : "Pin Note to Top") { model.setPinned(note.id, !note.isPinned) }
         Button(note.isLocked ? "Unlock" : "Lock (Read-Only)") { model.setLocked(note.id, !note.isLocked) }
         Divider()
-        if let path = note.localFile?.path {
+        if let path = note.filePath {
             Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
             Button("Close File") { model.closeFile(note.id) }
         } else {

@@ -26,8 +26,7 @@ public struct MarkdownSpan: Equatable, Sendable {
 
 public enum MarkdownStyler {
     private static func regex(_ pattern: String) -> NSRegularExpression {
-        // Patterns are compile-time constants; a failure here is a programming error.
-        try! NSRegularExpression(pattern: pattern, options: [.anchorsMatchLines])
+        HardydoNotesCore.regex(pattern, .anchorsMatchLines)
     }
 
     private static let fence = regex(#"^```[^\n]*\n[\s\S]*?(?:^```[ \t]*$|\z)"#)

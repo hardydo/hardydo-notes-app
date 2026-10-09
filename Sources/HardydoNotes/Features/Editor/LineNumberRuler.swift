@@ -4,7 +4,7 @@ import HardydoNotesCore
 final class LineNumberRuler: NSRulerView {
     private weak var textView: CodeTextView?
     private var observers: [NSObjectProtocol] = []
-    private var lines: LineIndex
+    private var caretLine = 0
 
     var zoom: CGFloat {
         didSet {
@@ -14,35 +14,32 @@ final class LineNumberRuler: NSRulerView {
     }
 
     private func updateThickness() {
-        let width = MarkdownTheme.gutterWidth(digits: String(lines.count).count, zoom: zoom)
+        let width = EditorTheme.gutterWidth(digits: String(textView?.lines.count ?? 1).count, zoom: zoom)
         if ruleThickness != width { ruleThickness = width }
     }
 
     init(textView: CodeTextView, scrollView: NSScrollView, zoom: CGFloat) {
         self.textView = textView
         self.zoom = zoom
-        lines = LineIndex(textView.string as NSString)
+        caretLine = textView.caretLine
         super.init(scrollView: scrollView, orientation: .verticalRuler)
         clientView = textView
         clipsToBounds = true
         updateThickness()
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .cursorUpdate, .activeInKeyWindow, .inVisibleRect], owner: self))
         let center = NotificationCenter.default
-        let redraw: @Sendable (Notification) -> Void = { [weak self] _ in
-            MainActor.assumeIsolated { self?.needsDisplay = true }
-        }
         observers = [
-            // Posted while the storage processes the edit, the only moment its edited range is known.
             center.addObserver(forName: NSTextStorage.didProcessEditingNotification, object: textView.textStorage, queue: nil) { [weak self] _ in
                 MainActor.assumeIsolated {
-                    guard let self, let storage = self.textView?.textStorage, storage.editedMask.contains(.editedCharacters) else { return }
-                    self.lines.update(storage.string as NSString, edited: storage.editedRange, delta: storage.changeInLength)
+                    guard let self, self.textView?.textStorage?.editedMask.contains(.editedCharacters) == true else { return }
                     self.needsDisplay = true
                     // Resizing the gutter retiles the scroll view, which must wait until the storage has finished editing.
                     DispatchQueue.main.async { [weak self] in self?.updateThickness() }
                 }
             },
-            center.addObserver(forName: NSTextView.didChangeSelectionNotification, object: textView, queue: .main, using: redraw),
+            center.addObserver(forName: NSTextView.didChangeSelectionNotification, object: textView, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.caretMoved() }
+            },
         ]
     }
 
@@ -56,6 +53,27 @@ final class LineNumberRuler: NSRulerView {
     }
 
     override var isFlipped: Bool { true }
+
+    // Only the old and new caret lines change colour; an edit redraws the whole gutter anyway.
+    private func caretMoved() {
+        guard let textView else { return }
+        let line = textView.caretLine
+        guard line != caretLine else { return }
+        for changed in [caretLine, line] {
+            if let rect = rect(ofLine: changed, in: textView) { setNeedsDisplay(rect) }
+        }
+        caretLine = line
+    }
+
+    private func rect(ofLine line: Int, in textView: CodeTextView) -> NSRect? {
+        guard let layoutManager = textView.layoutManager, line < textView.lines.count else { return nil }
+        let start = textView.lines.starts[line]
+        let fragment = start < (textView.string as NSString).length
+            ? layoutManager.lineFragmentRect(forGlyphAt: layoutManager.glyphIndexForCharacter(at: start), effectiveRange: nil)
+            : layoutManager.extraLineFragmentRect
+        let top = convert(NSPoint(x: 0, y: fragment.minY + textView.textContainerOrigin.y), from: textView).y
+        return NSRect(x: 0, y: top, width: bounds.width, height: fragment.height)
+    }
 
     override var requiredThickness: CGFloat { ruleThickness }
 
@@ -74,31 +92,29 @@ final class LineNumberRuler: NSRulerView {
         let visible = textView.visibleRect.offsetBy(dx: -origin.x, dy: -origin.y)
         let glyphs = layoutManager.glyphRange(forBoundingRect: visible, in: container)
         let characters = layoutManager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
-                let folds = textView.folds
-        let caretLine = lines.lineNumber(at: min(textView.selectedRange().location, text.length))
+        let folds = textView.folds
+        let lines = textView.lines
+        caretLine = textView.caretLine
         // A line break's own glyph reports a different position, so the baseline comes from the shared line metrics.
-        let baseline = MarkdownTheme.baselineOffset(zoom)
-        var index = text.lineRange(for: NSRange(location: characters.location, length: 0)).location
-        while index < NSMaxRange(characters) {
-            if let fold = folds.hidesLine(at: index) {
-                index = NSMaxRange(fold) < text.length ? NSMaxRange(text.lineRange(for: NSRange(location: NSMaxRange(fold), length: 0))) : text.length
+        let baseline = EditorTheme.baselineOffset(zoom)
+        var line = lines.line(at: characters.location)
+        while line < lines.count, lines.starts[line] < NSMaxRange(characters) {
+            let start = lines.starts[line]
+            if let fold = folds.hidesLine(at: start) {
+                line = lines.line(at: NSMaxRange(fold)) + 1
                 continue
             }
-            let lineRange = text.lineRange(for: NSRange(location: index, length: 0))
-            let line = lines.lineNumber(at: index)
-            let glyph = layoutManager.glyphIndexForCharacter(at: lineRange.location)
-            let fragment = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
-            draw(line, baseline: fragment.minY + baseline, in: textView, isCurrent: line == caretLine)
-            let isFolded = folds.isFolded(lineStart: index)
-            if isFolded || folds.regions[line - 1] != nil {
-                drawChevron(folded: isFolded, center: fragment.minY + baseline - MarkdownTheme.baseFont(zoom).xHeight / 2, in: textView)
+            let fragment = layoutManager.lineFragmentRect(forGlyphAt: layoutManager.glyphIndexForCharacter(at: start), effectiveRange: nil)
+            draw(line + 1, baseline: fragment.minY + baseline, in: textView, isCurrent: line == caretLine)
+            let isFolded = folds.isFolded(line: line)
+            if isFolded || folds.regions[line] != nil {
+                drawChevron(folded: isFolded, center: fragment.minY + baseline - EditorTheme.baseFont(zoom).xHeight / 2, in: textView)
             }
-            index = NSMaxRange(lineRange)
+            line += 1
         }
         let extra = layoutManager.extraLineFragmentRect
         if NSMaxRange(characters) == text.length, !extra.isEmpty {
-            let line = lines.count
-            draw(line, baseline: extra.minY + baseline, in: textView, isCurrent: line == caretLine)
+            draw(lines.count, baseline: extra.minY + baseline, in: textView, isCurrent: lines.count - 1 == caretLine)
         }
     }
 
@@ -121,7 +137,7 @@ final class LineNumberRuler: NSRulerView {
     private func drawChevron(folded: Bool, center: CGFloat, in textView: NSTextView) {
         guard let image = chevron(folded: folded) else { return }
         let y = convert(NSPoint(x: 0, y: center + textView.textContainerOrigin.y), from: textView).y
-        let column = MarkdownTheme.foldColumn * zoom
+        let column = EditorTheme.foldColumn * zoom
         let rect = NSRect(x: ruleThickness - column + (column - image.size.width) / 2, y: y - image.size.height / 2, width: image.size.width, height: image.size.height)
         image.draw(in: rect)
     }
@@ -129,7 +145,7 @@ final class LineNumberRuler: NSRulerView {
     // A click anywhere on a line's gutter toggles the block starting there, like the chevron column in VS Code.
     override func mouseDown(with event: NSEvent) {
         guard let line = line(at: event) else { return }
-        textView?.folds.toggle(line: line.number)
+        textView?.folds.toggle(line: line)
     }
 
     override func cursorUpdate(with event: NSEvent) { updateCursor(event) }
@@ -137,36 +153,35 @@ final class LineNumberRuler: NSRulerView {
 
     private func updateCursor(_ event: NSEvent) {
         guard let folds = textView?.folds, let line = line(at: event) else { return NSCursor.arrow.set() }
-        let hasChevron = folds.isFolded(lineStart: line.start) || folds.regions[line.number] != nil
+        let hasChevron = folds.isFolded(line: line) || folds.regions[line] != nil
         (hasChevron ? NSCursor.pointingHand : NSCursor.arrow).set()
     }
 
-    /// The 0-based line under the pointer and where it starts in the text.
-    private func line(at event: NSEvent) -> (number: Int, start: Int)? {
+    /// The 0-based line under the pointer.
+    private func line(at event: NSEvent) -> Int? {
         guard let textView, let layoutManager = textView.layoutManager, let container = textView.textContainer else { return nil }
         let point = textView.convert(event.locationInWindow, from: nil)
         let origin = textView.textContainerOrigin
         let glyph = layoutManager.glyphIndex(for: NSPoint(x: 0, y: point.y - origin.y), in: container)
         let fragment = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
         guard point.y - origin.y <= fragment.maxY else { return nil }
-        let index = layoutManager.characterIndexForGlyph(at: glyph)
-        let text = textView.string as NSString
-        let start = text.lineRange(for: NSRange(location: min(index, text.length), length: 0)).location
-        return (lines.lineNumber(at: start) - 1, start)
+        return textView.lines.line(at: layoutManager.characterIndexForGlyph(at: glyph))
     }
 
-    private var numberStyle: (zoom: CGFloat, normal: [NSAttributedString.Key: Any], current: [NSAttributedString.Key: Any])?
+    private var numberStyle: (zoom: CGFloat, digit: CGFloat, normal: [NSAttributedString.Key: Any], current: [NSAttributedString.Key: Any])?
 
     private func draw(_ number: Int, baseline: CGFloat, in textView: NSTextView, isCurrent: Bool) {
         if numberStyle?.zoom != zoom {
-            let font = MarkdownTheme.numberFont(zoom)
-            numberStyle = (zoom, [.font: font, .foregroundColor: NSColor.tertiaryLabelColor], [.font: font, .foregroundColor: NSColor.controlAccentColor])
+            let font = EditorTheme.numberFont(zoom)
+            let digit = ("0" as NSString).size(withAttributes: [.font: font]).width
+            numberStyle = (zoom, digit, [.font: font, .foregroundColor: NSColor.tertiaryLabelColor], [.font: font, .foregroundColor: NSColor.controlAccentColor])
         }
         guard let numberStyle, let font = numberStyle.normal[.font] as? NSFont else { return }
         let label = String(number) as NSString
         let attributes = isCurrent ? numberStyle.current : numberStyle.normal
         let y = convert(NSPoint(x: 0, y: baseline + textView.textContainerOrigin.y), from: textView).y - font.ascender
-        let width = label.size(withAttributes: attributes).width
-        label.draw(at: NSPoint(x: ruleThickness - width - (MarkdownTheme.foldColumn + MarkdownTheme.numberGap) * zoom, y: y), withAttributes: attributes)
+        // The digits are monospaced, so the width needs no text measuring.
+        let width = numberStyle.digit * CGFloat(label.length)
+        label.draw(at: NSPoint(x: ruleThickness - width - (EditorTheme.foldColumn + EditorTheme.numberGap) * zoom, y: y), withAttributes: attributes)
     }
 }

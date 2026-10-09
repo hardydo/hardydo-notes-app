@@ -22,7 +22,15 @@ enum SyntaxTheme {
     private static let heading = color(0x569CD6)
     private static let link = color(0x3794FF)
 
+    // Built once, since a colouring pass asks for them once per token.
+    @MainActor private static let table = Dictionary(uniqueKeysWithValues: SyntaxKind.allCases.map { ($0, makeAttributes($0)) })
+
+    @MainActor
     static func attributes(_ kind: SyntaxKind) -> [NSAttributedString.Key: Any] {
+        table[kind] ?? [:]
+    }
+
+    private static func makeAttributes(_ kind: SyntaxKind) -> [NSAttributedString.Key: Any] {
         switch kind {
         case .keyword, .literal: [.foregroundColor: keyword]
         case .string, .code: [.foregroundColor: string]
@@ -42,7 +50,7 @@ enum SyntaxTheme {
     }
 }
 
-enum MarkdownTheme {
+enum EditorTheme {
     static let foldColumn: CGFloat = 14
     static let lineHeight: CGFloat = 27
     private static let gutterLead: CGFloat = 10
@@ -58,7 +66,7 @@ enum MarkdownTheme {
         return ceil((gutterLead + numberGap + foldColumn) * zoom + CGFloat(max(2, digits)) * digit)
     }
 
-    // Text starts 20pt down and 6pt after the gutter (CodeTextView pins the container to the left); the preview page's padding matches a two-digit gutter.
+    // Text sits 6pt after the gutter (CodeTextView pins the container to the left); the preview page's padding matches a two-digit gutter.
     @MainActor
     static func applyInsets(to textView: NSTextView, zoom: CGFloat) {
         textView.textContainerInset = NSSize(width: 10 * zoom, height: 8 * zoom)
@@ -90,18 +98,18 @@ enum MarkdownTheme {
         return [.font: font, .foregroundColor: NSColor.textColor, .paragraphStyle: paragraph]
     }
 
-    @MainActor private static var baseline: (zoom: CGFloat, offset: CGFloat)?
+    @MainActor private static var baselines: [CGFloat: CGFloat] = [:]
 
     /// Distance from a line's top to its baseline, the same for every line; measured once per zoom by laying out a sample.
     @MainActor
     static func baselineOffset(_ zoom: CGFloat) -> CGFloat {
-        if let baseline, baseline.zoom == zoom { return baseline.offset }
+        if let offset = baselines[zoom] { return offset }
         let storage = NSTextStorage(string: "Ag", attributes: baseAttributes(zoom))
         let layoutManager = NSLayoutManager()
         layoutManager.addTextContainer(NSTextContainer(size: NSSize(width: 1_000, height: 1_000)))
         storage.addLayoutManager(layoutManager)
         let offset = layoutManager.location(forGlyphAt: 0).y
-        baseline = (zoom, offset)
+        baselines[zoom] = offset
         return offset
     }
 

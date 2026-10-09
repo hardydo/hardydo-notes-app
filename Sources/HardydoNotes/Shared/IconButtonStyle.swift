@@ -47,7 +47,6 @@ struct ToolbarIconStyle: ButtonStyle {
 extension ButtonStyle where Self == ToolbarIconStyle {
     static var toolbarIcon: ToolbarIconStyle { ToolbarIconStyle() }
 
-    /// A toolbar toggle: tinted while on.
     static func toolbarToggle(isOn: Bool) -> ToolbarIconStyle { ToolbarIconStyle(tint: isOn ? .accentColor : nil) }
 }
 

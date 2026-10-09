@@ -1,6 +1,6 @@
 import Foundation
 
-public enum SyntaxKind: Equatable, Sendable {
+public enum SyntaxKind: CaseIterable, Sendable {
     case keyword
     case string
     case number
@@ -32,7 +32,7 @@ public struct SyntaxToken: Equatable, Sendable {
     }
 }
 
-/// Colours text the way a code editor would. Later tokens win where they overlap.
+/// Later tokens win where they overlap.
 public enum SyntaxHighlighter {
     public static func tokens(in text: String, language: ContentLanguage) -> [SyntaxToken] {
         tokens(in: text, range: NSRange(location: 0, length: (text as NSString).length), language: language)
@@ -145,11 +145,6 @@ public enum SyntaxHighlighter {
         let rest = NSRange(location: range.location + NSMaxRange(nameRange), length: range.length - NSMaxRange(nameRange))
         result += tagInside.tokens(in: text, range: rest)
         return result
-    }
-
-    fileprivate static func regex(_ pattern: String, _ options: NSRegularExpression.Options = []) -> NSRegularExpression {
-        // Patterns are compile-time constants; a failure here is a programming error.
-        try! NSRegularExpression(pattern: pattern, options: options)
     }
 
     private static let dq = #""[^"\\\n]*+(?:\\.[^"\\\n]*+)*+"?"#
@@ -272,7 +267,7 @@ private struct Lexer: Sendable {
 
     // Each rule becomes one capturing group; rules themselves use only non-capturing groups.
     init(_ rules: [(String, SyntaxKind)], _ options: NSRegularExpression.Options = []) {
-        expression = SyntaxHighlighter.regex(rules.map { "(" + $0.0 + ")" }.joined(separator: "|"), options)
+        expression = regex(rules.map { "(" + $0.0 + ")" }.joined(separator: "|"), options)
         kinds = rules.map(\.1)
         precondition(expression.numberOfCaptureGroups == kinds.count, "A lexer rule must use only non-capturing groups")
     }
