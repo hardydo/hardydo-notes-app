@@ -30,6 +30,11 @@ extension NoteGroup {
     }
 }
 
+enum EntryPlace {
+    case note(Int)
+    case group(NoteGroup, [Int])
+}
+
 public enum SidebarEntry: Identifiable {
     case note(Note)
     case group(NoteGroup, [Note])
@@ -126,23 +131,36 @@ public struct NoteGroups: Codable, Equatable, Sendable {
 
     /// A group sits where its first note is in the list and gathers all its notes there, in list order; pinned groups and notes come first.
     public func entries(for notes: [Note]) -> [SidebarEntry] {
-        var members: [NoteGroup.ID: [Note]] = [:]
-        for note in notes {
-            if let group = membership[note.id] { members[group, default: []].append(note) }
+        entryPlaces(count: notes.count, id: { notes[$0].id }, isPinned: { notes[$0].isPinned }).map { place in
+            switch place {
+            case .note(let index): .note(notes[index])
+            case .group(let group, let members): .group(group, members.map { notes[$0] })
+            }
+        }
+    }
+
+    /// The entries by place in the list, so a caller holding only ids lists them by the same rules.
+    func entryPlaces(count: Int, id: (Int) -> Note.ID, isPinned: (Int) -> Bool) -> [EntryPlace] {
+        var members: [NoteGroup.ID: [Int]] = [:]
+        for index in 0..<count {
+            if let group = membership[id(index)] { members[group, default: []].append(index) }
         }
         // Pinned notes are listed first, so a group that is not pinned itself sits at its first unpinned note.
-        let anchors = Set(members.compactMap { id, notes in
-            group(id)?.isPinned == true ? notes.first?.id : (notes.first { !$0.isPinned } ?? notes.first)?.id
+        let anchors = Set(members.compactMap { group, places in
+            self.group(group)?.isPinned == true ? places.first : (places.first { !isPinned($0) } ?? places.first)
         })
-        var result: [SidebarEntry] = []
-        for note in notes {
-            guard let id = membership[note.id], let group = group(id) else {
-                result.append(.note(note))
+        var pinned: [EntryPlace] = []
+        var unpinned: [EntryPlace] = []
+        for index in 0..<count {
+            guard let groupID = membership[id(index)], let group = group(groupID) else {
+                if isPinned(index) { pinned.append(.note(index)) } else { unpinned.append(.note(index)) }
                 continue
             }
-            if anchors.contains(note.id) { result.append(.group(group, members[id] ?? [])) }
+            guard anchors.contains(index) else { continue }
+            let entry = EntryPlace.group(group, members[groupID] ?? [])
+            if group.isPinned { pinned.append(entry) } else { unpinned.append(entry) }
         }
-        return result.filter(\.isPinned) + result.filter { !$0.isPinned }
+        return pinned + unpinned
     }
 
     /// Notes in sidebar order, including those inside collapsed groups.

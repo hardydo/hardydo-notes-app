@@ -198,13 +198,17 @@ public enum TextSearch {
 
     public static func replacingAll(in text: String, expression: NSRegularExpression, template: String, options: SearchOptions) -> (text: String, count: Int) {
         let template = options.regex ? template : NSRegularExpression.escapedTemplate(for: template)
-        let result = NSMutableString(string: text)
+        let source = text as NSString
+        let result = NSMutableString(capacity: source.length)
+        var copied = 0
         var count = 0
-        let found = expression.matches(in: text, range: NSRange(location: 0, length: result.length)).filter { $0.range.length > 0 }
-        for match in found.reversed() {
-            result.replaceCharacters(in: match.range, with: expression.replacementString(for: match, in: text, offset: 0, template: template))
+        for match in expression.matches(in: text, range: NSRange(location: 0, length: source.length)) where match.range.length > 0 {
+            result.append(source.substring(with: NSRange(location: copied, length: match.range.location - copied)))
+            result.append(expression.replacementString(for: match, in: text, offset: 0, template: template))
+            copied = NSMaxRange(match.range)
             count += 1
         }
+        result.append(source.substring(from: copied))
         return (result as String, count)
     }
 

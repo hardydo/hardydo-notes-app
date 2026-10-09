@@ -74,7 +74,11 @@ struct FindBar: View {
         .onExitCommand { find.close() }
         .onAppear { focus = .query }
         .onChange(of: find.focusRequest) { focus = .query }
-        .task(id: find.inputs) { await find.refresh() }
+        .task(id: find.inputs) {
+            try? await Task.sleep(for: FindModel.typingPause)
+            guard !Task.isCancelled else { return }
+            await find.refresh()
+        }
     }
 
     private var counter: String {

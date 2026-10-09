@@ -129,7 +129,7 @@ final class EditorSession: NSObject, NSTextViewDelegate, @preconcurrency NSTextS
     func replaceText(of textView: NSTextView, with text: String) {
         guard textView.string != text else { return }
         let selection = textView.selectedRange()
-        let full = NSRange(location: 0, length: (textView.string as NSString).length)
+        let full = NSRange(location: 0, length: textView.textStorage?.length ?? 0)
         // shouldChangeText refuses edits on a non-editable view, so unlock while applying text that changed outside the editor.
         textView.isEditable = true
         isApplyingExternalText = true
@@ -147,25 +147,26 @@ final class EditorSession: NSObject, NSTextViewDelegate, @preconcurrency NSTextS
      */
     func colorSyntax(_ textView: NSTextView, delay: Duration? = nil) {
         syntaxTask?.cancel()
-        let text = textView.string
-        let lines = (textView as? CodeTextView)?.lines
-        let edits = editCount
-        let language = language
-        let length = (text as NSString).length
+        let length = textView.textStorage?.length ?? 0
         let delay = delay ?? (length > 100_000 ? .milliseconds(400) : .milliseconds(120))
         syntaxTask = Task { [weak textView] in
             if delay > .zero { try? await Task.sleep(for: delay) }
             _ = await self.tokenizing?.value
-            guard !Task.isCancelled else { return }
+            // The text is copied only once the pause is over, so the keystrokes that cancel a pass never copy it.
+            guard !Task.isCancelled, let textView else { return }
+            let text = textView.string
+            let lines = (textView as? CodeTextView)?.lines
+            let edits = self.editCount
+            let language = self.language
             var tokens: [SyntaxToken] = []
             var regions: [FoldRegion] = []
-            if length <= Self.syntaxLimit {
+            if (text as NSString).length <= Self.syntaxLimit {
                 let work = Task.detached(priority: .userInitiated) { Self.tokenize(text, language: language, lines: lines) }
                 self.tokenizing = work
                 (tokens, regions) = await work.value
             }
             // A composing input method calls back with the committed text, which colours it again.
-            guard !Task.isCancelled, let textView, self.editCount == edits, !textView.hasMarkedText() else { return }
+            guard !Task.isCancelled, self.editCount == edits, !textView.hasMarkedText() else { return }
             self.apply(tokens, regions, to: textView)
         }
     }
@@ -187,7 +188,7 @@ final class EditorSession: NSObject, NSTextViewDelegate, @preconcurrency NSTextS
     // Clipping each token to the redone span keeps overlapping tokens layered exactly as a full pass would.
     private func apply(_ tokens: [SyntaxToken], _ regions: [FoldRegion], to textView: NSTextView) {
         guard let layoutManager = textView.layoutManager else { return }
-        let length = (textView.string as NSString).length
+        let length = textView.textStorage?.length ?? 0
         let span = applied.map {
             TokenDiff.changedSpan(old: $0.tokens, new: tokens, oldLength: $0.length, newLength: length, unchangedPrefix: unchangedPrefix, unchangedSuffix: unchangedSuffix)
         } ?? (tokens.isEmpty ? nil : NSRange(location: 0, length: length))
@@ -216,7 +217,7 @@ final class EditorSession: NSObject, NSTextViewDelegate, @preconcurrency NSTextS
         // Matches come from the stored text, which lags behind while an input method is still composing.
         guard !textView.hasMarkedText() else { return }
         guard let layoutManager = textView.layoutManager else { return }
-        let length = (textView.string as NSString).length
+        let length = textView.textStorage?.length ?? 0
         layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: NSRange(location: 0, length: length))
         for range in ranges where NSMaxRange(range) <= length {
             let color = range == current ? NSColor.systemOrange.withAlphaComponent(0.55) : NSColor.systemYellow.withAlphaComponent(0.3)

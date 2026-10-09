@@ -48,7 +48,7 @@ final class EditorScrollView: NSScrollView {
         guard let textView = documentView as? CodeTextView, let layoutManager = textView.layoutManager else { return }
         let starts = textView.lines.starts
         let index = min(max(Int(line) - 1, 0), starts.count - 1)
-        let length = (textView.string as NSString).length
+        let length = textView.textStorage?.length ?? 0
         let start = min(starts[index], length)
         if start > Self.exactLimit {
             layoutManager.ensureLayout(forCharacterRange: NSRange(location: start, length: min(1, length - start)))
@@ -68,7 +68,7 @@ final class EditorScrollView: NSScrollView {
     // From the top of the line's first fragment to the bottom of its last, so a wrapped line counts as a whole.
     private func lineRect(_ index: Int, _ starts: [Int], in textView: NSTextView) -> NSRect {
         guard let layoutManager = textView.layoutManager else { return .zero }
-        let length = (textView.string as NSString).length
+        let length = textView.textStorage?.length ?? 0
         let start = starts[index]
         let end = index + 1 < starts.count ? starts[index + 1] : length
         guard end > start else { return layoutManager.extraLineFragmentRect }
@@ -157,7 +157,7 @@ final class EditorScrollView: NSScrollView {
     private func restore(_ anchor: (character: Int, offset: CGFloat), exact: Bool) {
         stopWheel()
         guard let textView = documentView as? NSTextView, let layoutManager = textView.layoutManager,
-              let container = textView.textContainer, anchor.character < (textView.string as NSString).length else { return }
+              let container = textView.textContainer, anchor.character < (textView.textStorage?.length ?? 0) else { return }
         if container.size.width != textView.bounds.width {
             container.size = NSSize(width: textView.bounds.width - 2 * textView.textContainerInset.width, height: container.size.height)
         }

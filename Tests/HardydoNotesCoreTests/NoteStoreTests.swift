@@ -134,6 +134,25 @@ private func legacyStore(in cache: NotesFile) -> NoteStore {
         #expect(NoteStore(notesFile: cache).notes.map(\.title) == ["Older", "Newer", NoteNaming.untitled], "custom order is saved")
     }
 
+    @Test @MainActor func notesAreFoundByIDAfterTheListChanges() {
+        let cache = temporaryNotesFile()
+        defer { cache.discard() }
+        let store = NoteStore(notesFile: cache)
+        let ids = (0..<4).map { index -> Note.ID in
+            let id = store.createNote()
+            store.updateBody(id, "# Note \(index)")
+            return id
+        }
+        #expect(store.note(ids[0])?.title == "Note 0")
+        store.reorder(ids)
+        #expect(ids.allSatisfy { store.index(of: $0).map { store.notes[$0].id } == $0 }, "found after a reorder")
+        store.delete(ids[1])
+        #expect(store.note(ids[1]) == nil && store.note(ids[2])?.title == "Note 2", "found after a delete")
+        let fresh = store.createNote()
+        #expect(store.index(of: fresh) == 0 && store.note(ids[3])?.title == "Note 3", "found after a note is added")
+        #expect(store.note(UUID()) == nil, "an unknown id is not found")
+    }
+
     @Test @MainActor func openedTextFileIsListedApartFromAppNotes() throws {
         let fixture = FileFixture()
         defer { fixture.discard() }

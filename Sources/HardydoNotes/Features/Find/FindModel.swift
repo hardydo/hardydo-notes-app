@@ -14,6 +14,7 @@ struct FindInputs: Equatable, Sendable {
 @MainActor
 @Observable
 final class FindModel {
+    static let typingPause = Duration.milliseconds(100)
     var isShown = false
     var showsReplace = false
     var query = ""
@@ -27,6 +28,7 @@ final class FindModel {
     @ObservationIgnored private var searched: FindInputs?
     @ObservationIgnored private var running: (inputs: FindInputs, task: Task<[NSRange]?, Never>)?
     @ObservationIgnored private var lastAction: Task<Void, Never>?
+    @ObservationIgnored private var pendingQuery: (location: Int, task: Task<Void, Never>)?
     private let editor: WorkspaceEditor
     private let store: NoteStore
 
@@ -101,26 +103,50 @@ final class FindModel {
     func close() {
         isShown = false
         current = nil
+        dropPendingQuery()
         running?.task.cancel()
         running = nil
         editor.controller.focus()
     }
 
-    // The field also hands back its unchanged text, on focus for one, which must not move the selection.
+    /*
+     The field also hands back its unchanged text, on focus for one, which must not move the selection. Typing
+     searches once a key pause; anything that acts on the matches runs the waiting search first.
+     */
     func setQuery(_ query: String) {
         guard query != self.query else { return }
         self.query = query
-        selectMatch(atOrAfter: editor.controller.selectedRange?.location ?? 0)
+        let location = pendingQuery?.location ?? editor.controller.selectedRange?.location ?? 0
+        pendingQuery?.task.cancel()
+        pendingQuery = (location, Task { [weak self] in
+            try? await Task.sleep(for: Self.typingPause)
+            guard !Task.isCancelled else { return }
+            self?.runPendingQuery()
+        })
+    }
+
+    private func runPendingQuery() {
+        guard let pending = pendingQuery else { return }
+        dropPendingQuery()
+        selectMatch(atOrAfter: pending.location)
+    }
+
+    private func dropPendingQuery() {
+        pendingQuery?.task.cancel()
+        pendingQuery = nil
     }
 
     func setOptions(_ options: SearchOptions) {
+        let location = pendingQuery?.location ?? editor.controller.selectedRange?.location ?? 0
+        dropPendingQuery()
         self.options = options
-        if isShown { selectMatch(atOrAfter: editor.controller.selectedRange?.location ?? 0) }
+        if isShown { selectMatch(atOrAfter: location) }
     }
 
     func next(forward: Bool = true) {
         editor.controller.commit()
         guard isShown else { return open() }
+        runPendingQuery()
         perform { [self] in
             guard await refresh() else { return }
             let selected = editor.controller.selectedRange ?? NSRange(location: 0, length: 0)
@@ -151,6 +177,7 @@ final class FindModel {
     func replaceCurrent() {
         let controller = editor.controller
         controller.commit()
+        runPendingQuery()
         perform { [self] in
             guard await refresh(), canReplace, let note = editor.note,
                   let expression = try? TextSearch.expression(for: query, options: options) else { return }
@@ -165,6 +192,7 @@ final class FindModel {
     func replaceAll() {
         let controller = editor.controller
         controller.commit()
+        runPendingQuery()
         perform { [self] in
             guard await refresh(), canReplace, let note = editor.note,
                   let expression = try? TextSearch.expression(for: query, options: options) else { return }

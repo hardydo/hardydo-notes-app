@@ -37,7 +37,7 @@ struct EditorView: NSViewRepresentable {
         }
         if controller.textView !== session.textView { controller.attach(session.textView, commit: session.commit) }
         session.update(text: text, language: language, isEditable: isEditable, zoom: zoom, highlights: highlights, currentHighlight: currentHighlight)
-        if let range = controller.pendingReveal, NSMaxRange(range) <= (session.textView.string as NSString).length {
+        if let range = controller.pendingReveal, NSMaxRange(range) <= (session.textView.textStorage?.length ?? 0) {
             controller.pendingReveal = nil
             let controller = controller
             DispatchQueue.main.async { controller.reveal(range) }

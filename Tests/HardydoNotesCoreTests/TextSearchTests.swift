@@ -121,6 +121,12 @@ private func ranges(_ query: String, _ text: String, _ options: SearchOptions = 
         #expect(TextSearch.replacement(for: NSRange(location: 1, length: 3), in: price, expression: literal, template: "x", options: SearchOptions()) == nil, "stale range is not replaced")
         let all = TextSearch.replacingAll(in: "a-b-c", expression: try! TextSearch.expression(for: "-", options: SearchOptions())!, template: "+", options: SearchOptions())
         #expect(all.text == "a+b+c" && all.count == 2, "replace all")
+        let groups = try! TextSearch.expression(for: "(\\w)=(\\d)", options: SearchOptions(regex: true))!
+        let swapped = TextSearch.replacingAll(in: "a=1, b=2; c=3", expression: groups, template: "$2:$1", options: SearchOptions(regex: true))
+        #expect(swapped.text == "1:a, 2:b; 3:c" && swapped.count == 3, "replace all fills each match's own groups")
+        let many = String(repeating: "x-", count: 5_000)
+        let dashes = TextSearch.replacingAll(in: many, expression: try! TextSearch.expression(for: "-", options: SearchOptions())!, template: "", options: SearchOptions())
+        #expect(dashes.text == String(repeating: "x", count: 5_000) && dashes.count == 5_000, "replace all over many matches")
     }
 
     @Test @MainActor func wholeWordReplaceSeesTheTextAroundTheMatch() {

@@ -41,6 +41,8 @@ public final class NoteStore {
     @ObservationIgnored private let diskQueue = DispatchQueue(label: "com.hardydo.notes.files", qos: .userInitiated)
     @ObservationIgnored private let finishedWrites = FileWriteInbox()
     @ObservationIgnored private var writing: Set<Note.ID> = []
+    @ObservationIgnored private var positions: [Note.ID: Int] = [:]
+    @ObservationIgnored private var positionsChange = -1
 
     public init(notesFile: NotesFile) {
         self.notesFile = notesFile
@@ -99,7 +101,16 @@ public final class NoteStore {
     }
 
     public func note(_ id: Note.ID) -> Note? {
-        notes.first { $0.id == id }
+        index(of: id).map { notes[$0] }
+    }
+
+    /// Answers from a map of positions that is only rebuilt when it turns out stale, so lookups stay O(1) while typing.
+    public func index(of id: Note.ID) -> Int? {
+        if let index = positions[id], index < notes.count, notes[index].id == id { return index }
+        guard positionsChange != changeCount else { return nil }
+        positions = Dictionary(notes.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
+        positionsChange = changeCount
+        return positions[id]
     }
 
     @discardableResult
@@ -124,7 +135,7 @@ public final class NoteStore {
     }
 
     public func setPinned(_ id: Note.ID, _ pinned: Bool) {
-        guard let index = notes.firstIndex(where: { $0.id == id }), notes[index].isPinned != pinned else { return }
+        guard let index = self.index(of: id), notes[index].isPinned != pinned else { return }
         notes[index].isPinned = pinned
         persist()
     }
@@ -186,7 +197,7 @@ public final class NoteStore {
 
     private func apply(_ check: LocalFileDisk.Check) {
         let id = check.job.id
-        guard !writing.contains(id), let index = notes.firstIndex(where: { $0.id == id }), notes[index].localFile == check.job.file,
+        guard !writing.contains(id), let index = self.index(of: id), notes[index].localFile == check.job.file,
               revision(of: id) == check.job.revision, let location = check.location else { return }
         if let moved = location.moved { notes[index].localFile = moved }
         guard check.stamp != check.job.file.stamp else { return }
@@ -203,7 +214,7 @@ public final class NoteStore {
         guard let conflict = fileConflict else { return }
         fileConflict = nil
         waitForFileWrites()
-        guard let index = notes.firstIndex(where: { $0.id == conflict.id }), let file = notes[index].localFile,
+        guard let index = self.index(of: conflict.id), let file = notes[index].localFile,
               let location = LocalFileDisk.locate(file) else { return }
         if let moved = location.moved { notes[index].localFile = moved }
         if keepAppVersion {
@@ -237,7 +248,7 @@ public final class NoteStore {
     /// Returns the note's new revision, or nil when nothing changed.
     @discardableResult
     public func updateBody(_ id: Note.ID, _ body: String) -> Int? {
-        guard let index = notes.firstIndex(where: { $0.id == id }),
+        guard let index = self.index(of: id),
               !notes[index].isLocked, Self.differs(notes[index].body, body) else { return nil }
         notes[index].body = body
         notes[index].modifiedAt = Date()
@@ -249,14 +260,14 @@ public final class NoteStore {
     }
 
     public func setLocked(_ id: Note.ID, _ locked: Bool) {
-        guard let index = notes.firstIndex(where: { $0.id == id }) else { return }
+        guard let index = self.index(of: id) else { return }
         notes[index].isLocked = locked
         persist()
     }
 
     /// Names a note kept in the app by hand; an empty name goes back to its first line.
     public func rename(_ id: Note.ID, to title: String) {
-        guard let index = notes.firstIndex(where: { $0.id == id }), !notes[index].isLocked, notes[index].localFile == nil else { return }
+        guard let index = self.index(of: id), !notes[index].isLocked, notes[index].localFile == nil else { return }
         let trimmed = String(title.trimmingCharacters(in: .whitespacesAndNewlines).prefix(NoteNaming.maxTitleLength))
         let customTitle = trimmed.isEmpty ? nil : trimmed
         guard notes[index].customTitle != customTitle else { return }
@@ -281,14 +292,14 @@ public final class NoteStore {
 
     /// Removes a note kept in the app; files opened from disk are closed instead.
     public func delete(_ id: Note.ID) {
-        guard let index = notes.firstIndex(where: { $0.id == id }), !notes[index].isLocked, notes[index].localFile == nil else { return }
+        guard let index = self.index(of: id), !notes[index].isLocked, notes[index].localFile == nil else { return }
         notes.remove(at: index)
         persist()
     }
 
     /// Takes an opened file off the list after writing its pending edits; the file stays on disk.
     public func close(_ id: Note.ID) {
-        guard let index = notes.firstIndex(where: { $0.id == id }), notes[index].localFile != nil else { return }
+        guard let index = self.index(of: id), notes[index].localFile != nil else { return }
         flushFileWrites()
         guard notes[index].localFile?.needsSave != true else {
             fileError = fileError ?? "“\(notes[index].title)” could not be saved to its file, so it is still open. Fix the save error, then close it again."
@@ -328,7 +339,7 @@ public final class NoteStore {
         for write in finishedWrites.take() {
             let id = write.job.id
             writing.remove(id)
-            guard let index = notes.firstIndex(where: { $0.id == id }), notes[index].localFile != nil else { continue }
+            guard let index = self.index(of: id), notes[index].localFile != nil else { continue }
             if let moved = write.location?.moved {
                 notes[index].localFile?.path = moved.path
                 notes[index].localFile?.bookmark = moved.bookmark

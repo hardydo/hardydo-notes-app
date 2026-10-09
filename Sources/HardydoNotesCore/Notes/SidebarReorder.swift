@@ -91,9 +91,21 @@ extension NoteGroups {
         }
     }
 
+    /// The rows `rows(for:)` would list for these notes, worked out from their ids alone.
+    fileprivate func rowKeys(ids: [Note.ID], pinned: Set<Note.ID>) -> [RowKey] {
+        entryPlaces(count: ids.count, id: { ids[$0] }, isPinned: { pinned.contains(ids[$0]) }).flatMap { place -> [RowKey] in
+            switch place {
+            case .note(let index):
+                [.note(ids[index], nil)]
+            case .group(let group, let members):
+                [.header(group.id)] + (group.isCollapsed ? [] : members.map { .note(ids[$0], group.id) })
+            }
+        }
+    }
+
     /*
-     Every landing place is tried up front and kept only if the sidebar would list the result exactly as
-     shown while dragging, so pinned notes, pinned groups and group blocks never end up somewhere else on drop.
+     A landing place is kept only if the sidebar would list the result exactly as shown while dragging, so
+     pinned notes, pinned groups and group blocks never end up somewhere else on drop.
      */
     public func reorderPlan(moving id: UUID, in notes: [Note]) -> SidebarReorderPlan? {
         let rows = rows(for: notes)
@@ -109,7 +121,8 @@ extension NoteGroups {
         let block = Array(rows[start..<end])
         var remaining = rows
         remaining.removeSubrange(start..<end)
-        let byID = Dictionary(notes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let known = Set(notes.map(\.id))
+        let pinned = Set(notes.filter(\.isPinned).map(\.id))
         var hidden: [NoteGroup.ID: [Note.ID]] = [:]
         for note in notes where note.id != id {
             if let group = group(of: note.id), group.isCollapsed { hidden[group.id, default: []].append(note.id) }
@@ -131,8 +144,8 @@ extension NoteGroups {
                 case .header(let group): hidden[group] ?? []
                 }
             }
-            let sorted = order.compactMap { byID[$0] }
-            let listed = updated.rows(for: sorted.filter(\.isPinned) + sorted.filter { !$0.isPinned }).map(\.key)
+            let sorted = order.filter(known.contains)
+            let listed = updated.rowKeys(ids: sorted.filter(pinned.contains) + sorted.filter { !pinned.contains($0) }, pinned: pinned)
             let expected = layout.filter { key in
                 if case .header(let group) = key { return updated.group(group) != nil }
                 return true

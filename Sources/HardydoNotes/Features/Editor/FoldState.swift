@@ -22,7 +22,7 @@ final class FoldState: NSObject, @preconcurrency NSLayoutManagerDelegate {
     /// The folds that decide what shows: sorted and never overlapping, so lookups can binary-search.
     private var outer: [NSRange] = []
 
-    private var text: NSString { (textView?.string ?? "") as NSString }
+    private var text: NSString { textView?.textStorage?.mutableString ?? NSString() }
     private var lines: LineIndex { textView?.lines ?? LineIndex("") }
 
     private static func outermost(_ ranges: [NSRange]) -> [NSRange] {

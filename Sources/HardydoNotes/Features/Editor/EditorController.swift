@@ -95,11 +95,11 @@ final class EditorController {
 
     var selectedText: String? {
         guard let textView, let range = selectedRange, range.length > 0 else { return nil }
-        return (textView.string as NSString).substring(with: range)
+        return textView.textStorage?.mutableString.substring(with: range)
     }
 
     func reveal(_ range: NSRange) {
-        guard let textView, NSMaxRange(range) <= (textView.string as NSString).length else { return }
+        guard let textView, NSMaxRange(range) <= (textView.textStorage?.length ?? 0) else { return }
         folds?.unfold(intersecting: range)
         textView.setSelectedRange(range)
         textView.scrollRangeToVisible(range)
@@ -122,7 +122,7 @@ final class EditorController {
 
     @discardableResult
     func replace(_ range: NSRange, with text: String) -> Bool {
-        guard let textView, textView.isEditable, NSMaxRange(range) <= (textView.string as NSString).length,
+        guard let textView, textView.isEditable, NSMaxRange(range) <= (textView.textStorage?.length ?? 0),
               textView.shouldChangeText(in: range, replacementString: text) else { return false }
         textView.breakUndoCoalescing()
         textView.textStorage?.replaceCharacters(in: range, with: text)
@@ -133,7 +133,7 @@ final class EditorController {
     func replaceAll(with text: String) -> Bool {
         guard let textView else { return false }
         let caret = textView.selectedRange().location
-        guard replace(NSRange(location: 0, length: (textView.string as NSString).length), with: text) else { return false }
+        guard replace(NSRange(location: 0, length: textView.textStorage?.length ?? 0), with: text) else { return false }
         textView.setSelectedRange(NSRange(location: min(caret, (text as NSString).length), length: 0))
         return true
     }

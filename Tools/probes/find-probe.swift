@@ -72,6 +72,13 @@ MainActor.assumeIsolated {
     expect(tv.string == "# Alpha\napple pie\nbanana apple\ncherry", "replace all undoes in one step")
     model.find.close(); wait(0.2)
 
+    model.find.open()
+    for length in 1...5 { model.find.setQuery(String("apple".prefix(length))); wait(0.02) }
+    expect(model.find.inputs.map(model.find.isCurrent) == false, "typing in find waits for a pause before searching")
+    wait(0.4)
+    expect(model.find.inputs.map(model.find.isCurrent) == true && model.find.ranges == apples, "and searches once typing stops")
+    model.find.close(); wait(0.2)
+
     model.openGlobalSearch()
     model.globalSearch.query = "cherry"
     wait(0.6)

@@ -45,7 +45,7 @@ extension AppModel {
             }
         }
         guard let id = ReorderGeometry.row(at: position, leads: leads, lengths: lengths) else { return store.notes.count }
-        return store.notes.firstIndex { $0.id == id } ?? store.notes.count
+        return store.index(of: id) ?? store.notes.count
     }
 
     func openDropped(_ providers: [NSItemProvider], at position: Int) {

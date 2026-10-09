@@ -68,7 +68,7 @@ final class LineNumberRuler: NSRulerView {
     private func rect(ofLine line: Int, in textView: CodeTextView) -> NSRect? {
         guard let layoutManager = textView.layoutManager, line < textView.lines.count else { return nil }
         let start = textView.lines.starts[line]
-        let fragment = start < (textView.string as NSString).length
+        let fragment = start < (textView.textStorage?.length ?? 0)
             ? layoutManager.lineFragmentRect(forGlyphAt: layoutManager.glyphIndexForCharacter(at: start), effectiveRange: nil)
             : layoutManager.extraLineFragmentRect
         let top = convert(NSPoint(x: 0, y: fragment.minY + textView.textContainerOrigin.y), from: textView).y
@@ -86,8 +86,8 @@ final class LineNumberRuler: NSRulerView {
     }
 
     override func drawHashMarksAndLabels(in rect: NSRect) {
-        guard let textView, let layoutManager = textView.layoutManager, let container = textView.textContainer else { return }
-        let text = textView.string as NSString
+        guard let textView, let layoutManager = textView.layoutManager, let container = textView.textContainer,
+              let text = textView.textStorage?.mutableString else { return }
         let origin = textView.textContainerOrigin
         let visible = textView.visibleRect.offsetBy(dx: -origin.x, dy: -origin.y)
         let glyphs = layoutManager.glyphRange(forBoundingRect: visible, in: container)
