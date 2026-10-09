@@ -8,18 +8,18 @@ struct PreviewView: NSViewRepresentable {
     let language: ContentLanguage
     let zoom: CGFloat
     let syncsScroll: Bool
-    let model: AppModel
+    let workspace: WorkspaceEditor
 
     /// The page's own background, drawn behind the web view so nothing else shows while it catches up.
     static let pageBackground = Color(red: 13 / 255, green: 17 / 255, blue: 23 / 255)
 
     func makeNSView(context: Context) -> WKWebView {
-        model.previewPage().attach()
+        workspace.previewPage().attach()
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         if webView.pageZoom != zoom { webView.pageZoom = zoom }
-        let page = model.previewPage()
+        let page = workspace.previewPage()
         page.syncsScroll = syncsScroll
         page.show(text, language: language)
     }

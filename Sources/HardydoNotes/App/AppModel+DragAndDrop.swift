@@ -3,9 +3,31 @@ import HardydoNotesCore
 import UniformTypeIdentifiers
 
 extension AppModel {
+    func open(_ urls: [URL], at position: Int = 0) {
+        var failures: [String] = []
+        for (offset, url) in urls.enumerated() where url.isFileURL {
+            do {
+                tabs.open(try store.openFile(url, at: position + offset), keep: true)
+            } catch {
+                failures.append(error.localizedDescription)
+            }
+        }
+        if !failures.isEmpty {
+            dialogs.showAlert("Couldn’t Open File", failures.joined(separator: "\n"))
+        }
+    }
+
+    func showOpenPanel() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.plainText, .sourceCode, .json, .xml, .html, .yaml]
+        panel.allowsMultipleSelection = true
+        guard panel.runModal() == .OK else { return }
+        open(panel.urls)
+    }
+
     /// Escape puts a dragged row back.
     func cancelDrag(on event: NSEvent) -> Bool {
-        let sessions = [sidebarReorder, fileReorder, tabReorder].filter(\.isDragging)
+        let sessions = [sidebar.reorder, sidebar.fileReorder, tabs.reorder].filter(\.isDragging)
         guard event.keyCode == 53, !sessions.isEmpty else { return false }
         sessions.forEach { $0.cancel() }
         return true
@@ -13,10 +35,10 @@ extension AppModel {
 
     /// A file dropped on a note's row opens just above it; anywhere else, at the end.
     func fileDropIndex(at position: CGFloat) -> Int {
-        let shown = Set(groups.rows(for: store.appNotes).map(\.id) + store.localFileNotes.map(\.id))
+        let shown = Set(groups.list.rows(for: store.appNotes).map(\.id) + store.localFileNotes.map(\.id))
         var leads: [UUID: CGFloat] = [:]
         var lengths: [UUID: CGFloat] = [:]
-        for session in [sidebarReorder, fileReorder] {
+        for session in [sidebar.reorder, sidebar.fileReorder] {
             for (id, frame) in session.frames where shown.contains(id) {
                 leads[id] = frame.minY
                 lengths[id] = frame.height

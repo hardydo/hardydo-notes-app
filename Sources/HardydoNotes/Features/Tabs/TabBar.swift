@@ -1,27 +1,34 @@
 import HardydoNotesCore
 import SwiftUI
 
-struct TabBar: View {
-    let model: AppModel
+struct TabBar: View, Equatable {
+    let tabs: TabsModel
+    let actions: TabActions
+
+    // The closures are made anew on every render of the parent, but always act on the same models, so those are compared.
+    nonisolated static func == (lhs: TabBar, rhs: TabBar) -> Bool {
+        MainActor.assumeIsolated { lhs.tabs === rhs.tabs }
+    }
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 0) {
-                    ForEach(model.tabList.ids, id: \.self) { id in
-                        if let note = model.store.note(id)?.summary {
+                    ForEach(tabs.list.ids, id: \.self) { id in
+                        if let note = actions.note(id) {
                             TabItem(
                                 note: note,
-                                isActive: model.selection == id,
-                                isTransient: model.transientTab == id,
-                                isPinned: model.isTabPinned(id),
-                                model: model
+                                isActive: tabs.selection == id,
+                                isTransient: tabs.transient == id,
+                                isPinned: tabs.isPinned(id),
+                                tabs: tabs,
+                                actions: actions
                             )
                             .equatable()
-                            .reorderable(id, in: model.tabReorder, cornerRadius: 6, liftedFill: Color(nsColor: .textBackgroundColor), plan: { model.tabPlan(lifting: id) }, onPress: {
-                                model.activate(id)
+                            .reorderable(id, in: tabs.reorder, cornerRadius: 6, liftedFill: Color(nsColor: .textBackgroundColor), plan: { tabs.plan(lifting: id) }, onPress: {
+                                tabs.activate(id)
                             }, onClick: { count in
-                                if count == 2 { model.keepTab(id) }
+                                if count == 2 { tabs.keep(id) }
                             })
                             .id(id)
                         }
@@ -29,7 +36,7 @@ struct TabBar: View {
                 }
                 .coordinateSpace(.named("tabs"))
             }
-            .onChange(of: model.selection) { _, id in
+            .onChange(of: tabs.selection) { _, id in
                 if let id { withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(id) } }
             }
         }
@@ -44,7 +51,8 @@ private struct TabItem: View, Equatable {
     let isActive: Bool
     let isTransient: Bool
     let isPinned: Bool
-    let model: AppModel
+    let tabs: TabsModel
+    let actions: TabActions
     @StateObject private var hover = ViewState(false)
 
     private var isHovered: Bool { hover.value }
@@ -70,7 +78,7 @@ private struct TabItem: View, Equatable {
                 .lineLimit(1)
                 .foregroundStyle(isActive ? .primary : .secondary)
             if isPinned {
-                Button { model.setTabPinned(note.id, false) } label: {
+                Button { tabs.setPinned(note.id, false) } label: {
                     Image(systemName: "pin.fill")
                         .font(.system(size: 9))
                         .rotationEffect(.degrees(45))
@@ -83,7 +91,7 @@ private struct TabItem: View, Equatable {
                 ZStack {
                     if isActive || isHovered {
                         HoverCloseButton(size: 16, help: "Close Tab (⌘W)") {
-                            model.closeTab(note.id)
+                            tabs.close(note.id)
                         }
                     }
                 }
@@ -105,44 +113,45 @@ private struct TabItem: View, Equatable {
         .onHover { inside in
             hover.value = inside
             if inside {
-                model.tabUnderPointer = note.id
-            } else if model.tabUnderPointer == note.id {
-                model.tabUnderPointer = nil
+                tabs.underPointer = note.id
+            } else if tabs.underPointer == note.id {
+                tabs.underPointer = nil
             }
         }
         .help(note.filePath ?? note.title)
-        .contextMenu { TabContextMenu(model: model, id: note.id, isTransient: isTransient, isPinned: isPinned) }
+        .contextMenu { TabContextMenu(tabs: tabs, actions: actions, id: note.id, isTransient: isTransient, isPinned: isPinned) }
     }
 }
 
 private struct TabContextMenu: View {
-    let model: AppModel
+    let tabs: TabsModel
+    let actions: TabActions
     let id: Note.ID
     let isTransient: Bool
     let isPinned: Bool
 
     var body: some View {
-        Button(isPinned ? "Unpin Tab" : "Pin Tab") { model.setTabPinned(id, !isPinned) }
+        Button(isPinned ? "Unpin Tab" : "Pin Tab") { tabs.setPinned(id, !isPinned) }
         if isTransient {
-            Button("Keep Tab Open") { model.keepTab(id) }
+            Button("Keep Tab Open") { tabs.keep(id) }
         }
-        if let note = model.store.note(id)?.summary {
-            Button(note.isLocked ? "Unlock" : "Lock (Read-Only)") { model.setLocked(id, !note.isLocked) }
+        if let note = actions.note(id) {
+            Button(note.isLocked ? "Unlock" : "Lock (Read-Only)") { actions.setLocked(id, !note.isLocked) }
             if note.filePath == nil {
-                Button("Rename…") { model.requestRename(id) }
+                Button("Rename…") { actions.rename(id) }
                     .disabled(note.isLocked)
             }
         }
         Divider()
-        Button("Close Tab") { model.closeTab(id) }
-        Button("Close Other Tabs") { model.closeOtherTabs(id) }
-            .disabled(!model.tabList.canCloseOthers(id))
-        Button("Close Tabs to the Right") { model.closeTabs(rightOf: id) }
-            .disabled(!model.tabList.canCloseRight(of: id))
-        Button("Close All Tabs") { model.closeAllTabs() }
-            .disabled(!model.tabList.canCloseAll)
+        Button("Close Tab") { tabs.close(id) }
+        Button("Close Other Tabs") { tabs.closeOthers(id) }
+            .disabled(!tabs.list.canCloseOthers(id))
+        Button("Close Tabs to the Right") { tabs.closeRight(of: id) }
+            .disabled(!tabs.list.canCloseRight(of: id))
+        Button("Close All Tabs") { tabs.closeAll() }
+            .disabled(!tabs.list.canCloseAll)
         Divider()
-        Button("Reopen Closed Tab") { model.reopenClosedTab() }
-            .disabled(!model.tabList.canReopen)
+        Button("Reopen Closed Tab") { tabs.reopen() }
+            .disabled(!tabs.list.canReopen)
     }
 }

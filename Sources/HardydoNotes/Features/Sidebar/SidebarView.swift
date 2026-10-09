@@ -2,7 +2,7 @@ import HardydoNotesCore
 import SwiftUI
 
 struct SidebarView: View {
-    @Bindable var model: AppModel
+    let model: AppModel
 
     // Resizing re-runs the reader's content, which compares equal, so the list is not rebuilt for every frame of a resize.
     var body: some View {
@@ -35,32 +35,32 @@ private struct SidebarContent: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         if model.globalSearch.isShown {
-                            GlobalSearchResults(model: model)
+                            GlobalSearchResults(search: model.globalSearch, tabs: model.tabs, find: model.find, open: model.openResult).equatable()
                         } else {
                             SidebarList(model: model) { isListFocused = true }
                         }
                     }
                     .overlayPreferenceValue(GroupBarKey.self) { items in
-                        GeometryReader { proxy in GroupBars(model: model, items: items, proxy: proxy) }
+                        GeometryReader { proxy in GroupBars(reorder: model.sidebar.reorder, groups: model.groups, items: items, proxy: proxy) }
                             .allowsHitTesting(false)
                     }
                     .coordinateSpace(.named("sidebar"))
                     .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named(FileDrop.space)).minY } action: { listTop.value = $0 }
                     .background(ThinScrollBar())
-                    .background(ReorderScrollAnchor(sessions: [model.sidebarReorder, model.fileReorder]))
+                    .background(ReorderScrollAnchor(sessions: [model.sidebar.reorder, model.sidebar.fileReorder]))
                     .padding(.horizontal, 8)
                     .padding(.bottom, 6)
                 }
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
-                    model.sidebarReorder.viewport = frame
-                    model.fileReorder.viewport = frame
+                    model.sidebar.reorder.viewport = frame
+                    model.sidebar.fileReorder.viewport = frame
                 }
             }
             // The sidebar scroll view applies the toolbar inset twice on this macOS, leaving a gap; the toolbar height is padded in by hand instead.
             .ignoresSafeArea(.container, edges: .top)
             .coordinateSpace(.named(FileDrop.space))
             .onDrop(of: [.fileURL], delegate: FileDrop(model: model, listTop: listTop))
-            .background(SelectionScroller(model: model, proxy: proxy))
+            .background(SelectionScroller(tabs: model.tabs, sidebar: model.sidebar, globalSearch: model.globalSearch, proxy: proxy))
             .focusable()
             .focused($isListFocused)
             .focusEffectDisabled()
@@ -72,7 +72,7 @@ private struct SidebarContent: View {
                 }
             }
             .onDeleteCommand {
-                if model.visibleNotes.contains(where: { $0.id == model.selection }) { model.requestDelete(model.selection) }
+                if model.visibleNotes.contains(where: { $0.id == model.tabs.selection }) { model.requestDelete(model.tabs.selection) }
             }
             .onChange(of: model.globalSearch.focusRequest) { isSearchFocused = true }
             .onAppear {
@@ -86,7 +86,7 @@ private struct SidebarContent: View {
         SectionHeader(title: AppInfo.name) {
             Button { model.openGlobalSearch() } label: { Image(systemName: "magnifyingglass").font(.system(size: 12.5)) }
                 .help("Search All Notes (⇧⌘F)")
-            Button { model.isClearingEmptyNotes = true } label: { Image(systemName: "trash").font(.system(size: 12)) }
+            Button { model.dialogs.isClearingEmptyNotes = true } label: { Image(systemName: "trash").font(.system(size: 12)) }
                 .help("Delete Empty Notes…")
                 .disabled(!model.store.hasEmptyNotes)
             Button { model.newNote() } label: { Image(systemName: "square.and.pencil") }
@@ -101,28 +101,31 @@ private struct SidebarList: View {
     let focusList: () -> Void
 
     var body: some View {
-        let rows = model.groups.rows(for: model.store.appNotes)
+        let sidebar = model.sidebar
+        let groups = model.groups
+        let actions = NoteRowActions(model: model, focusList: focusList)
+        let rows = groups.list.rows(for: model.store.appNotes)
         ForEach(rows) { row in
-            LiftLayer(cell: model.sidebarReorder.cell(row.id)) {
+            LiftLayer(cell: sidebar.reorder.cell(row.id)) {
                 switch row {
                 case .header(let group):
-                    SidebarGroupRow(model: model, group: group).equatable()
+                    SidebarGroupRow(sidebar: sidebar, groups: groups, group: group, newNote: model.newNote(inGroup:)).equatable()
                 case .note(let note, let group):
-                    SidebarNoteRow(model: model, note: note, group: group, focusList: focusList).equatable()
+                    SidebarNoteRow(sidebar: sidebar, groups: groups, note: note, group: group, actions: actions).equatable()
                 }
             }
         }
-        .onChange(of: rows.map(\.id)) { model.sidebarReorder.cancel() }
+        .onChange(of: rows.map(\.id)) { sidebar.reorder.cancel() }
         let files = model.store.localFileNotes
         if !files.isEmpty {
             SectionHeader(title: "Open Files") { EmptyView() }
                 .padding(.top, 8)
             ForEach(files) { note in
-                LiftLayer(cell: model.fileReorder.cell(note.id)) {
-                    SidebarFileRow(model: model, note: note.summary, focusList: focusList).equatable()
+                LiftLayer(cell: sidebar.fileReorder.cell(note.id)) {
+                    SidebarFileRow(sidebar: sidebar, groups: groups, note: note.summary, actions: actions).equatable()
                 }
             }
-            .onChange(of: files.map(\.id)) { model.fileReorder.cancel() }
+            .onChange(of: files.map(\.id)) { sidebar.fileReorder.cancel() }
         }
     }
 }
@@ -141,38 +144,40 @@ private struct LiftLayer<Content: View>: View {
 }
 
 private struct SidebarGroupRow: View, Equatable {
-    let model: AppModel
+    let sidebar: SidebarModel
+    let groups: GroupsModel
     let group: NoteGroup
+    let newNote: (NoteGroup.ID) -> Void
 
     nonisolated static func == (lhs: SidebarGroupRow, rhs: SidebarGroupRow) -> Bool {
         MainActor.assumeIsolated { lhs.group == rhs.group }
     }
 
     var body: some View {
-        GroupHeader(model: model, group: group)
+        GroupHeader(groups: groups, group: group, newNote: newNote)
             .padding(.vertical, 2)
-            .reorderable(group.id, in: model.sidebarReorder, plan: { [model, id = group.id] in model.sidebarPlan(lifting: id) }, onClick: { [model, id = group.id] _ in
-                model.toggleGroup(id)
+            .reorderable(group.id, in: sidebar.reorder, plan: { [groups, id = group.id] in groups.sidebarPlan(lifting: id) }, onClick: { [groups, id = group.id] _ in
+                groups.toggle(id)
             })
     }
 }
 
 private struct SidebarNoteRow: View, Equatable {
-    let model: AppModel
+    let sidebar: SidebarModel
+    let groups: GroupsModel
     let note: NoteSummary
     let group: NoteGroup?
-    let focusList: () -> Void
+    let actions: NoteRowActions
 
     nonisolated static func == (lhs: SidebarNoteRow, rhs: SidebarNoteRow) -> Bool {
         MainActor.assumeIsolated { lhs.note == rhs.note && lhs.group == rhs.group }
     }
 
     var body: some View {
-        let actions = NoteRowActions(model: model, focusList: focusList)
-        GroupLane(model: model, id: note.id, group: group) {
-            NoteRow(note: note, state: model.rowState(note.id), actions: actions)
+        GroupLane(reorder: sidebar.reorder, id: note.id, group: group) {
+            NoteRow(note: note, state: sidebar.rowState(note.id), actions: actions)
                 .padding(.vertical, 1)
-                .reorderable(note.id, in: model.sidebarReorder, plan: { [model, id = note.id] in model.sidebarPlan(lifting: id) }, onPress: {
+                .reorderable(note.id, in: sidebar.reorder, plan: { [groups, id = note.id] in groups.sidebarPlan(lifting: id) }, onPress: {
                     actions.select(note.id)
                 }, onClick: { count in
                     if count == 2 { actions.keep(note.id) }
@@ -183,19 +188,19 @@ private struct SidebarNoteRow: View, Equatable {
 }
 
 private struct SidebarFileRow: View, Equatable {
-    let model: AppModel
+    let sidebar: SidebarModel
+    let groups: GroupsModel
     let note: NoteSummary
-    let focusList: () -> Void
+    let actions: NoteRowActions
 
     nonisolated static func == (lhs: SidebarFileRow, rhs: SidebarFileRow) -> Bool {
         MainActor.assumeIsolated { lhs.note == rhs.note }
     }
 
     var body: some View {
-        let actions = NoteRowActions(model: model, focusList: focusList)
-        NoteRow(note: note, state: model.rowState(note.id), actions: actions)
+        NoteRow(note: note, state: sidebar.rowState(note.id), actions: actions)
             .padding(.vertical, 1)
-            .reorderable(note.id, in: model.fileReorder, plan: { [model, id = note.id] in model.filePlan(lifting: id) }, onPress: {
+            .reorderable(note.id, in: sidebar.fileReorder, plan: { [groups, id = note.id] in groups.filePlan(lifting: id) }, onPress: {
                 actions.select(note.id)
             }, onClick: { count in
                 if count == 2 { actions.keep(note.id) }
@@ -206,12 +211,14 @@ private struct SidebarFileRow: View, Equatable {
 
 /// Only this view follows the selection, so selecting a note does not rebuild the sidebar around it.
 private struct SelectionScroller: View {
-    let model: AppModel
+    let tabs: TabsModel
+    let sidebar: SidebarModel
+    let globalSearch: GlobalSearchModel
     let proxy: ScrollViewProxy
 
     var body: some View {
-        Color.clear.onChange(of: model.selection) { _, id in
-            guard let id, !model.globalSearch.isShown, !model.sidebarReorder.isPressed, !model.fileReorder.isPressed else { return }
+        Color.clear.onChange(of: tabs.selection) { _, id in
+            guard let id, !globalSearch.isShown, !sidebar.isPressed else { return }
             proxy.scrollTo(id)
         }
     }
@@ -237,20 +244,20 @@ private struct FileDrop: DropDelegate {
 
 /// Indents a group's notes; the lifted note follows the group it would drop into.
 private struct GroupLane<Content: View>: View {
-    let model: AppModel
+    let reorder: ReorderSession
     let id: Note.ID
     let group: NoteGroup?
     @ViewBuilder let content: Content
 
     var body: some View {
-        let cell = model.sidebarReorder.cell(id)
+        let cell = reorder.cell(id)
         content
             .padding(.leading, isIndented(cell) ? 9 : 0)
             .anchorPreference(key: GroupBarKey.self, value: .bounds) { [GroupBarItem(id: id, group: group?.id, bounds: $0)] }
     }
 
     private func isIndented(_ cell: ReorderCell) -> Bool {
-        guard cell.lift?.isAlone == true, let landing = model.sidebarReorder.landing else { return group != nil }
+        guard cell.lift?.isAlone == true, let landing = reorder.landing else { return group != nil }
         return landing.lane != nil
     }
 }
@@ -274,7 +281,8 @@ private struct GroupBarKey: PreferenceKey {
  never splits while rows slide. A note being dragged counts where it would land, so the bar spans the gap it leaves.
  */
 private struct GroupBars: View {
-    let model: AppModel
+    let reorder: ReorderSession
+    let groups: GroupsModel
     let items: [GroupBarItem]
     let proxy: GeometryProxy
 
@@ -295,7 +303,7 @@ private struct GroupBars: View {
     }
 
     private var spans: [Span] {
-        let session = model.sidebarReorder
+        let session = reorder
         var spans: [Span] = []
         for item in items {
             let placed: (group: NoteGroup.ID?, shift: CGFloat)
@@ -306,7 +314,7 @@ private struct GroupBars: View {
             } else {
                 placed = (item.group, session.shifts[item.id] ?? 0)
             }
-            guard let id = placed.group, let group = model.groups.group(id), !group.isCollapsed else { continue }
+            guard let id = placed.group, let group = groups.list.group(id), !group.isCollapsed else { continue }
             let rect = proxy[item.bounds]
             let top = rect.minY + placed.shift
             let bottom = rect.maxY + placed.shift - 2

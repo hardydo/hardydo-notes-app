@@ -1,29 +1,23 @@
 import HardydoNotesCore
 import Foundation
 
-enum QuickOpenMode: Equatable {
-    case notes
-    case line
-}
-
 extension AppModel {
-    func showQuickOpen(_ mode: QuickOpenMode = .notes) {
-        editor.commit()
-        quickOpen = mode
-    }
-
-    func closeQuickOpen() {
-        quickOpen = nil
-        editor.focus()
-    }
-
-    func quickOpenNotes(matching query: String) -> [NoteSummary] {
-        let listed = (groups.orderedNotes(store.appNotes) + store.localFileNotes).map(\.summary)
-        return FuzzyMatch.rank(QuickOpenRanking.candidates(openTabs: tabList.ids, listed: listed), query: query) { $0.title }
-    }
-
-    var selectedLineCount: Int {
-        guard let note = selectedNote else { return 0 }
-        return editor.lineCount ?? LineIndex(note.body as NSString).count
+    var quickOpenActions: QuickOpenActions {
+        QuickOpenActions(
+            notes: { [self] query in
+                let listed = (groups.list.orderedNotes(store.appNotes) + store.localFileNotes).map(\.summary)
+                return FuzzyMatch.rank(QuickOpenRanking.candidates(openTabs: tabs.list.ids, listed: listed), query: query) { $0.title }
+            },
+            place: { [self] note in
+                if let path = note.filePath { return (path as NSString).deletingLastPathComponent }
+                return groups.list.group(of: note.id)?.displayName
+            },
+            lineCount: { [workspace] in workspace.lineCount },
+            open: { [self] in tabs.open($0) },
+            goToLine: { [workspace] line in
+                workspace.leavePreview(to: .edit)
+                workspace.goToLine(line)
+            }
+        )
     }
 }

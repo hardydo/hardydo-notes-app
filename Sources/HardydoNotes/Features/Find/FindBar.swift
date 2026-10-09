@@ -2,7 +2,6 @@ import HardydoNotesCore
 import SwiftUI
 
 struct FindBar: View {
-    let model: AppModel
     @Bindable var find: FindModel
     @FocusState private var focus: Field?
 
@@ -13,10 +12,10 @@ struct FindBar: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 6) {
-            Button { model.find.showsReplace.toggle() } label: {
+            Button { find.showsReplace.toggle() } label: {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 10, weight: .semibold))
-                    .rotationEffect(.degrees(model.find.showsReplace ? 90 : 0))
+                    .rotationEffect(.degrees(find.showsReplace ? 90 : 0))
                     .frame(width: 16, height: 24)
                     .contentShape(Rectangle())
             }
@@ -26,15 +25,15 @@ struct FindBar: View {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
                     box {
-                        TextField("Find", text: Binding(get: { model.find.query }, set: { model.setFindQuery($0) }))
+                        TextField("Find", text: Binding(get: { find.query }, set: { find.setQuery($0) }))
                             .focused($focus, equals: .query)
-                            .onSubmit { model.findNext() }
+                            .onSubmit { find.next() }
                             .onKeyPress(.return, phases: .down) { press in
                                 guard press.modifiers.contains(.shift) else { return .ignored }
-                                model.findNext(forward: false)
+                                find.next(forward: false)
                                 return .handled
                             }
-                        SearchOptionToggles(options: model.searchOptions) { model.setSearchOptions($0) }
+                        SearchOptionToggles(options: find.options) { find.setOptions($0) }
                     }
                     Text(counter)
                         .font(.system(size: 11))
@@ -42,26 +41,26 @@ struct FindBar: View {
                         .foregroundStyle(counterColor)
                         .frame(minWidth: 58, alignment: .leading)
                     HStack(spacing: 0) {
-                        iconButton("chevron.up", "Previous Match (⇧⌘G, ⇧↩)") { model.findNext(forward: false) }
-                        iconButton("chevron.down", "Next Match (⌘G, ↩)") { model.findNext() }
+                        iconButton("chevron.up", "Previous Match (⇧⌘G, ⇧↩)") { find.next(forward: false) }
+                        iconButton("chevron.down", "Next Match (⌘G, ↩)") { find.next() }
                     }
-                    .disabled(model.find.ranges.isEmpty)
+                    .disabled(find.ranges.isEmpty)
                     Spacer(minLength: 0)
-                    iconButton("xmark", "Close (Esc)") { model.closeFind() }
+                    iconButton("xmark", "Close (Esc)") { find.close() }
                 }
-                if model.find.showsReplace {
+                if find.showsReplace {
                     HStack(spacing: 6) {
                         box {
-                            TextField(model.searchOptions.regex ? "Replace ($1, $2… refer to regex groups)" : "Replace", text: $find.replaceText)
+                            TextField(find.options.regex ? "Replace ($1, $2… refer to regex groups)" : "Replace", text: $find.replaceText)
                                 .focused($focus, equals: .replace)
-                                .onSubmit { model.replaceCurrent() }
+                                .onSubmit { find.replaceCurrent() }
                         }
-                        Button("Replace") { model.replaceCurrent() }
+                        Button("Replace") { find.replaceCurrent() }
                             .help("Replace this match and go to the next (↩ in the Replace field)")
-                            .disabled(!model.canReplace)
-                        Button("Replace All") { model.replaceAll() }
+                            .disabled(!find.canReplace)
+                        Button("Replace All") { find.replaceAll() }
                             .help("Replace every match in the note (⌘Z to undo)")
-                            .disabled(!model.canReplace)
+                            .disabled(!find.canReplace)
                         Spacer(minLength: 0)
                     }
                     .controlSize(.small)
@@ -72,14 +71,13 @@ struct FindBar: View {
         .padding(.vertical, 7)
         .background(.bar)
         .overlay(alignment: .bottom) { Divider() }
-        .onExitCommand { model.closeFind() }
+        .onExitCommand { find.close() }
         .onAppear { focus = .query }
-        .onChange(of: model.find.focusRequest) { focus = .query }
-        .task(id: model.findInputs) { await model.refreshFind() }
+        .onChange(of: find.focusRequest) { focus = .query }
+        .task(id: find.inputs) { await find.refresh() }
     }
 
     private var counter: String {
-        let find = model.find
         if let error = find.error { return error }
         if find.ranges.isEmpty { return "No results" }
         let total = find.ranges.count >= TextSearch.maxMatches ? "\(find.ranges.count)+" : "\(find.ranges.count)"
@@ -87,7 +85,6 @@ struct FindBar: View {
     }
 
     private var counterColor: Color {
-        let find = model.find
         if find.error != nil || (find.ranges.isEmpty && !find.query.isEmpty) { return .red }
         return find.query.isEmpty ? .primary : .secondary
     }

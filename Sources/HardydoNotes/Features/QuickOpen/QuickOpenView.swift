@@ -10,7 +10,8 @@ struct QuickOpenState {
 }
 
 struct QuickOpenView: View {
-    let model: AppModel
+    let quickOpen: QuickOpenModel
+    let actions: QuickOpenActions
     let mode: QuickOpenMode
     let width: CGFloat
     @StateObject private var state = ViewState(QuickOpenState())
@@ -38,7 +39,7 @@ struct QuickOpenView: View {
                 .onSubmit(submit)
                 .onKeyPress(.downArrow) { move(1) }
                 .onKeyPress(.upArrow) { move(-1) }
-                .onExitCommand { model.closeQuickOpen() }
+                .onExitCommand { quickOpen.close() }
             Divider()
             if isLineMode {
                 Text(lineHint)
@@ -56,7 +57,7 @@ struct QuickOpenView: View {
                     ScrollView {
                         LazyVStack(spacing: 0) {
                             ForEach(Array(matches.enumerated()), id: \.element.id) { index, note in
-                                QuickOpenRow(note: note, place: place(of: note), isHighlighted: index == state.value.highlighted)
+                                QuickOpenRow(note: note, place: actions.place(note), isHighlighted: index == state.value.highlighted)
                                     .onTapGesture { open(note) }
                             }
                         }
@@ -89,13 +90,8 @@ struct QuickOpenView: View {
         .onChange(of: mode, initial: true) { state.value.query = mode == .line ? ":" : "" }
         .onChange(of: state.value.query, initial: true) {
             state.value.highlighted = 0
-            matches.value = isLineMode ? [] : Array(model.quickOpenNotes(matching: state.value.query).prefix(Self.limit))
+            matches.value = isLineMode ? [] : Array(actions.notes(state.value.query).prefix(Self.limit))
         }
-    }
-
-    private func place(of note: NoteSummary) -> String? {
-        if let path = note.filePath { return (path as NSString).deletingLastPathComponent }
-        return model.groups.group(of: note.id)?.displayName
     }
 
     // Set on every move, and from one place: the editor underneath keeps putting its own text cursor back.
@@ -106,7 +102,7 @@ struct QuickOpenView: View {
     }
 
     private var lineHint: String {
-        let count = model.selectedLineCount
+        let count = actions.lineCount()
         guard count > 0 else { return "Open a note to go to a line." }
         if let line = Int(state.value.query.dropFirst()) { return "Go to line \(min(max(line, 1), count)), then press Return." }
         return "Type a line number between 1 and \(count)."
@@ -121,10 +117,9 @@ struct QuickOpenView: View {
 
     private func submit() {
         if isLineMode {
-            guard let line = Int(state.value.query.dropFirst()), model.selectedLineCount > 0 else { return }
-            model.leavePreview(to: .edit)
-            model.quickOpen = nil
-            model.goToLine(line)
+            guard let line = Int(state.value.query.dropFirst()), actions.lineCount() > 0 else { return }
+            quickOpen.dismiss()
+            actions.goToLine(line)
         } else if matches.value.indices.contains(state.value.highlighted) {
             open(matches.value[state.value.highlighted])
         }
@@ -136,27 +131,27 @@ struct QuickOpenView: View {
      */
     private func watchOutside() {
         stopWatching()
-        let clicks = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [model, frame] event in
+        let clicks = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [quickOpen, frame] event in
             MainActor.assumeIsolated {
                 guard let content = event.window?.contentView else { return }
                 let location = event.locationInWindow
-                if !frame.value.contains(CGPoint(x: location.x, y: content.bounds.height - location.y)) { model.closeQuickOpen() }
+                if !frame.value.contains(CGPoint(x: location.x, y: content.bounds.height - location.y)) { quickOpen.close() }
             }
             return event
         }
-        let keys = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [model] event in
-            if Self.isOtherCommand(event) { MainActor.assumeIsolated { Self.close(model, after: event) } }
+        let keys = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [quickOpen] event in
+            if Self.isOtherCommand(event) { MainActor.assumeIsolated { Self.close(quickOpen, after: event) } }
             return event
         }
         let center = NotificationCenter.default
-        let menuBar = center.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { [model] note in
+        let menuBar = center.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { [quickOpen] note in
             let menu = (note.object as AnyObject?).map(ObjectIdentifier.init)
             MainActor.assumeIsolated {
-                if menu != nil, menu == NSApp.mainMenu.map(ObjectIdentifier.init) { model.closeQuickOpen() }
+                if menu != nil, menu == NSApp.mainMenu.map(ObjectIdentifier.init) { quickOpen.close() }
             }
         }
-        let windows = center.addObserver(forName: NSWindow.didResignKeyNotification, object: nil, queue: .main) { [model] _ in
-            MainActor.assumeIsolated { model.closeQuickOpen() }
+        let windows = center.addObserver(forName: NSWindow.didResignKeyNotification, object: nil, queue: .main) { [quickOpen] _ in
+            MainActor.assumeIsolated { quickOpen.close() }
         }
         unwatch.value = [clicks, keys].compactMap { $0 }.map { monitor in { NSEvent.removeMonitor(monitor) } }
             + [menuBar, windows].map { observer in { center.removeObserver(observer) } }
@@ -175,18 +170,18 @@ struct QuickOpenView: View {
     }
 
     // Closes once the command has run, so it still sees the palette focused; the editor takes focus back unless the command moved it.
-    private static func close(_ model: AppModel, after event: NSEvent) {
+    private static func close(_ quickOpen: QuickOpenModel, after event: NSEvent) {
         let window = event.window
         let responder = window?.firstResponder
         DispatchQueue.main.async {
-            guard model.quickOpen != nil else { return }
-            if window?.firstResponder === responder { model.closeQuickOpen() } else { model.quickOpen = nil }
+            guard quickOpen.mode != nil else { return }
+            if window?.firstResponder === responder { quickOpen.close() } else { quickOpen.dismiss() }
         }
     }
 
     private func open(_ note: NoteSummary) {
-        model.quickOpen = nil
-        model.selectNote(note.id)
+        quickOpen.dismiss()
+        actions.open(note.id)
     }
 }
 

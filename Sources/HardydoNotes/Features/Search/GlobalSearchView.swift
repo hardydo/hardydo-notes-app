@@ -18,7 +18,7 @@ struct GlobalSearchField: View {
                     .font(.system(size: 12))
                     .focused(isFocused)
                     .onExitCommand { model.closeGlobalSearch() }
-                SearchOptionToggles(options: model.searchOptions) { model.setSearchOptions($0) }
+                SearchOptionToggles(options: model.find.options) { model.find.setOptions($0) }
                 Button { model.closeGlobalSearch() } label: {
                     Image(systemName: "xmark.circle.fill").font(.system(size: 11))
                 }
@@ -49,8 +49,17 @@ struct GlobalSearchField: View {
 }
 
 /// One row per note and per line, so the list only builds the rows that scroll into view.
-struct GlobalSearchResults: View {
-    let model: AppModel
+/// Reads the selection and the find match itself, so the sidebar around it does not follow them.
+struct GlobalSearchResults: View, Equatable {
+    let search: GlobalSearchModel
+    let tabs: TabsModel
+    let find: FindModel
+    let open: (Note.ID, LineMatch) -> Void
+
+    // The closures are made anew on every render of the parent, but always act on the same models, so those are compared.
+    nonisolated static func == (lhs: GlobalSearchResults, rhs: GlobalSearchResults) -> Bool {
+        MainActor.assumeIsolated { lhs.search === rhs.search && lhs.tabs === rhs.tabs && lhs.find === rhs.find }
+    }
 
     private enum Row {
         case note(NoteMatches, isCollapsed: Bool)
@@ -69,8 +78,8 @@ struct GlobalSearchResults: View {
             case .line(let result, let line, let isLast):
                 ResultLine(
                     line: line,
-                    isCurrent: model.selection == result.id && model.find.current == line.range
-                ) { model.openResult(result.id, line) }
+                    isCurrent: tabs.selection == result.id && find.current == line.range
+                ) { open(result.id, line) }
                     .padding(.top, 1)
                     .padding(.bottom, isLast ? 6 : 0)
             }
@@ -78,18 +87,18 @@ struct GlobalSearchResults: View {
     }
 
     private var rows: [Row] {
-        let collapsed = model.globalSearch.collapsed
-        return model.globalSearch.results.flatMap { result in
+        let collapsed = search.collapsed
+        return search.results.flatMap { result in
             let isCollapsed = collapsed.contains(result.id)
             return [Row.note(result, isCollapsed: isCollapsed)] + (isCollapsed ? [] : result.lines.map { Row.line(result, $0, isLast: $0.range == result.lines.last?.range) })
         }
     }
 
     private func toggle(_ id: Note.ID) {
-        if model.globalSearch.collapsed.contains(id) {
-            model.globalSearch.collapsed.remove(id)
+        if search.collapsed.contains(id) {
+            search.collapsed.remove(id)
         } else {
-            model.globalSearch.collapsed.insert(id)
+            search.collapsed.insert(id)
         }
     }
 }
@@ -98,6 +107,7 @@ private struct ResultHeader: View {
     let result: NoteMatches
     let isCollapsed: Bool
     let toggle: () -> Void
+    @StateObject private var hover = ViewState(false)
 
     var body: some View {
         Button(action: toggle) {
@@ -122,10 +132,15 @@ private struct ResultHeader: View {
                     .background(Capsule().fill(Color.primary.opacity(0.07)))
             }
             .padding(.horizontal, 6)
-            .padding(.vertical, 4)
+            .padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(hover.value ? Color.primary.opacity(0.08) : .clear)
+            )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onHover { hover.value = $0 }
         .pointerStyle(.link)
         .help(isCollapsed ? "Expand" : "Collapse")
     }

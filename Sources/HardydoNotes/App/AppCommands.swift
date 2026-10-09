@@ -10,19 +10,19 @@ struct AppCommands: Commands {
         CommandGroup(replacing: .newItem) {
             Button("New Note") { model.newNote() }.keyboardShortcut("n")
             Button("Open…") { model.showOpenPanel() }.keyboardShortcut("o")
-            Button("Go to Note…") { model.showQuickOpen() }.keyboardShortcut("p")
+            Button("Go to Note…") { model.quickOpen.show() }.keyboardShortcut("p")
         }
         CommandGroup(replacing: .saveItem) {
             Button("Save") { model.save() }.keyboardShortcut("s")
             Button("Export…") { model.exportCurrent() }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
-                .disabled(model.selection == nil)
+                .disabled(model.tabs.selection == nil)
             Divider()
             TabCommands(model: model)
             Divider()
-            Button("Lock or Unlock Note") { model.toggleLock() }
+            Button("Lock or Unlock Note") { model.workspace.toggleLock() }
                 .keyboardShortcut("l", modifiers: [.command, .option])
-                .disabled(model.selection == nil)
+                .disabled(model.tabs.selection == nil)
         }
         CommandGroup(replacing: .printItem) {}
         CommandGroup(replacing: .textEditing) {
@@ -38,13 +38,13 @@ struct AppCommands: Commands {
             GoCommands(model: model)
         }
         CommandMenu("Format") {
-            FormatCommands(editor: model.editor, enabled: model.canFormatMarkdown && model.editor.hasFocus) {
-                model.isInsertingTable = true
+            FormatCommands(editor: model.workspace.controller, enabled: model.workspace.canFormatMarkdown && model.workspace.controller.hasFocus) {
+                model.workspace.isInsertingTable = true
             }
             Divider()
-            Button("Format JSON") { model.formatDocument() }
+            Button("Format JSON") { model.workspace.formatDocument() }
                 .keyboardShortcut("f", modifiers: [.shift, .option])
-                .disabled(!model.canFormatDocument || !model.editor.hasFocus)
+                .disabled(!model.workspace.canFormatDocument || !model.workspace.controller.hasFocus)
         }
     }
 }
@@ -53,19 +53,19 @@ private struct TabCommands: View {
     let model: AppModel
 
     var body: some View {
-        Button(model.selection == nil ? "Close Window" : "Close Tab") { model.closeCurrentTab() }
+        Button(model.tabs.selection == nil ? "Close Window" : "Close Tab") { model.tabs.closeCurrent() }
             .keyboardShortcut("w")
-        Button("Close Other Tabs") { model.selection.map(model.closeOtherTabs) }
+        Button("Close Other Tabs") { model.tabs.selection.map(model.tabs.closeOthers) }
             .keyboardShortcut("w", modifiers: [.command, .option])
-            .disabled(!(model.selection.map(model.tabList.canCloseOthers) ?? false))
-        Button("Close All Tabs") { model.closeAllTabs() }
-            .disabled(!model.tabList.canCloseAll)
-        Button("Reopen Closed Tab") { model.reopenClosedTab() }
+            .disabled(!(model.tabs.selection.map(model.tabs.list.canCloseOthers) ?? false))
+        Button("Close All Tabs") { model.tabs.closeAll() }
+            .disabled(!model.tabs.list.canCloseAll)
+        Button("Reopen Closed Tab") { model.tabs.reopen() }
             .keyboardShortcut("t", modifiers: [.command, .shift])
-            .disabled(!model.tabList.canReopen)
-        if let selection = model.selection {
-            let pinned = model.isTabPinned(selection)
-            Button(pinned ? "Unpin Tab" : "Pin Tab") { model.setTabPinned(selection, !pinned) }
+            .disabled(!model.tabs.list.canReopen)
+        if let selection = model.tabs.selection {
+            let pinned = model.tabs.isPinned(selection)
+            Button(pinned ? "Unpin Tab" : "Pin Tab") { model.tabs.setPinned(selection, !pinned) }
         }
     }
 }
@@ -74,33 +74,33 @@ private struct GoCommands: View {
     let model: AppModel
 
     var body: some View {
-        Button("Next Tab") { model.cycleTabs(by: 1) }
+        Button("Next Tab") { model.tabs.cycle(by: 1) }
             .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
-        Button("Previous Tab") { model.cycleTabs(by: -1) }
+        Button("Previous Tab") { model.tabs.cycle(by: -1) }
             .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
         Menu("Switch Tab") {
-            Button("Next Tab") { model.cycleTabs(by: 1) }
+            Button("Next Tab") { model.tabs.cycle(by: 1) }
                 .keyboardShortcut("]", modifiers: [.command, .shift])
-            Button("Previous Tab") { model.cycleTabs(by: -1) }
+            Button("Previous Tab") { model.tabs.cycle(by: -1) }
                 .keyboardShortcut("[", modifiers: [.command, .shift])
-            Button("Next Tab") { model.cycleTabs(by: 1) }
+            Button("Next Tab") { model.tabs.cycle(by: 1) }
                 .keyboardShortcut(.tab, modifiers: .control)
-            Button("Previous Tab") { model.cycleTabs(by: -1) }
+            Button("Previous Tab") { model.tabs.cycle(by: -1) }
                 .keyboardShortcut(.tab, modifiers: [.control, .shift])
             Divider()
             ForEach(1...8, id: \.self) { number in
-                Button("Tab \(number)") { model.activateTab(at: number - 1) }
+                Button("Tab \(number)") { model.tabs.activate(at: number - 1) }
                     .keyboardShortcut(KeyEquivalent(Character("\(number)")), modifiers: .control)
             }
-            Button("Last Tab") { model.activateTab(at: model.tabList.ids.count - 1) }
+            Button("Last Tab") { model.tabs.activate(at: model.tabs.list.ids.count - 1) }
                 .keyboardShortcut("9", modifiers: .control)
         }
-        .disabled(model.tabList.ids.count < 2)
+        .disabled(model.tabs.list.ids.count < 2)
         Divider()
-        Button("Go to Note…") { model.showQuickOpen() }
-        Button("Go to Line…") { model.showQuickOpen(.line) }
+        Button("Go to Note…") { model.quickOpen.show() }
+        Button("Go to Line…") { model.quickOpen.show(.line) }
             .keyboardShortcut("g", modifiers: .control)
-            .disabled(!model.canEditText)
+            .disabled(!model.workspace.canEditText)
     }
 }
 
@@ -111,7 +111,7 @@ private struct ViewModeCommands: View {
         mode("Editor", .edit, "1")
         mode("Editor and Preview", .split, "2")
         mode("Preview", .preview, "3")
-        Button("Toggle Preview") { model.togglePreview() }
+        Button("Toggle Preview") { model.workspace.togglePreview() }
             .keyboardShortcut("v", modifiers: [.command, .shift])
         Divider()
         Button("Zoom In") { model.layout.setZoom(model.layout.zoom * 1.1) }
@@ -122,21 +122,21 @@ private struct ViewModeCommands: View {
             .keyboardShortcut("0")
         Divider()
         Group {
-            Button("Fold") { model.editor.fold() }
+            Button("Fold") { model.workspace.controller.fold() }
                 .keyboardShortcut("[", modifiers: [.command, .option])
-            Button("Unfold") { model.editor.unfold() }
+            Button("Unfold") { model.workspace.controller.unfold() }
                 .keyboardShortcut("]", modifiers: [.command, .option])
-            Button("Fold All") { model.editor.foldAll() }
+            Button("Fold All") { model.workspace.controller.foldAll() }
                 .keyboardShortcut("[", modifiers: [.command, .option, .shift])
-            Button("Unfold All") { model.editor.unfoldAll() }
+            Button("Unfold All") { model.workspace.controller.unfoldAll() }
                 .keyboardShortcut("]", modifiers: [.command, .option, .shift])
         }
-        .disabled(model.selection == nil || model.viewMode == .preview)
+        .disabled(model.tabs.selection == nil || model.workspace.viewMode == .preview)
         Divider()
     }
 
     private func mode(_ title: String, _ mode: ViewMode, _ key: KeyEquivalent) -> some View {
-        Toggle(title, isOn: Binding(get: { model.viewMode == mode }, set: { if $0 { model.viewMode = mode } }))
+        Toggle(title, isOn: Binding(get: { model.workspace.viewMode == mode }, set: { if $0 { model.workspace.viewMode = mode } }))
             .keyboardShortcut(key, modifiers: [.command, .option])
     }
 }
@@ -146,16 +146,16 @@ private struct FindCommands: View {
 
     var body: some View {
         Group {
-            Button("Find…") { model.openFind() }
+            Button("Find…") { model.find.open() }
                 .keyboardShortcut("f")
-            Button("Find and Replace…") { model.openFind(replace: true) }
+            Button("Find and Replace…") { model.find.open(replace: true) }
                 .keyboardShortcut("f", modifiers: [.command, .option])
-            Button("Find Next") { model.findNext() }
+            Button("Find Next") { model.find.next() }
                 .keyboardShortcut("g")
-            Button("Find Previous") { model.findNext(forward: false) }
+            Button("Find Previous") { model.find.next(forward: false) }
                 .keyboardShortcut("g", modifiers: [.command, .shift])
         }
-        .disabled(model.selection == nil)
+        .disabled(model.tabs.selection == nil)
         Divider()
         Button("Search All Notes") { model.toggleGlobalSearch() }
             .keyboardShortcut("f", modifiers: [.command, .shift])
@@ -167,33 +167,33 @@ private struct LineCommands: View {
 
     var body: some View {
         Group {
-            Button("Select Line") { model.selectLine() }
+            Button("Select Line") { model.workspace.selectLine() }
                 .keyboardShortcut("l")
             Divider()
-            Button("Move Line Up") { model.moveLines(.up) }
+            Button("Move Line Up") { model.workspace.moveLines(.up) }
                 .keyboardShortcut(.upArrow, modifiers: .option)
-            Button("Move Line Down") { model.moveLines(.down) }
+            Button("Move Line Down") { model.workspace.moveLines(.down) }
                 .keyboardShortcut(.downArrow, modifiers: .option)
-            Button("Copy Line Up") { model.copyLines(.up) }
+            Button("Copy Line Up") { model.workspace.copyLines(.up) }
                 .keyboardShortcut(.upArrow, modifiers: [.option, .shift])
-            Button("Copy Line Down") { model.copyLines(.down) }
+            Button("Copy Line Down") { model.workspace.copyLines(.down) }
                 .keyboardShortcut(.downArrow, modifiers: [.option, .shift])
-            Button("Delete Line") { model.deleteLines() }
+            Button("Delete Line") { model.workspace.deleteLines() }
                 .keyboardShortcut("k", modifiers: [.command, .shift])
             Divider()
-            Button("Insert Line Below") { model.insertLine(.down) }
+            Button("Insert Line Below") { model.workspace.insertLine(.down) }
                 .keyboardShortcut(.return, modifiers: .command)
-            Button("Insert Line Above") { model.insertLine(.up) }
+            Button("Insert Line Above") { model.workspace.insertLine(.up) }
                 .keyboardShortcut(.return, modifiers: [.command, .shift])
             Divider()
-            Button("Indent Line") { model.indentLines() }
+            Button("Indent Line") { model.workspace.indentLines() }
                 .keyboardShortcut("]")
-            Button("Outdent Line") { model.outdentLines() }
+            Button("Outdent Line") { model.workspace.outdentLines() }
                 .keyboardShortcut("[")
-            Button("Toggle Line Comment") { model.toggleComment() }
+            Button("Toggle Line Comment") { model.workspace.toggleComment() }
                 .keyboardShortcut("/")
         }
-        .disabled(!model.canEditText || !model.editor.hasFocus)
+        .disabled(!model.workspace.canEditText || !model.workspace.controller.hasFocus)
     }
 }
 

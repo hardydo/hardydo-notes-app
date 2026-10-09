@@ -3,13 +3,14 @@ import SwiftUI
 
 /// A group's header pill, like an Edge tab group; a click folds the group, a drag moves the whole group.
 struct GroupHeader: View {
-    let model: AppModel
+    let groups: GroupsModel
     let group: NoteGroup
+    let newNote: (NoteGroup.ID) -> Void
 
     private var isEditing: Binding<Bool> {
         Binding(
-            get: { model.editingGroup == group.id },
-            set: { if !$0, model.editingGroup == group.id { model.editingGroup = nil } }
+            get: { groups.editing == group.id },
+            set: { if !$0, groups.editing == group.id { groups.editing = nil } }
         )
     }
 
@@ -36,14 +37,14 @@ struct GroupHeader: View {
                     .foregroundStyle(.tertiary)
                     .help("Group pinned to the top")
             }
-            Button { model.newNote(inGroup: group.id) } label: { Image(systemName: "plus") }
+            Button { newNote(group.id) } label: { Image(systemName: "plus") }
                 .buttonStyle(.icon)
                 .help("New Note in Group")
-            Button { model.editingGroup = group.id } label: { Image(systemName: "pencil") }
+            Button { groups.editing = group.id } label: { Image(systemName: "pencil") }
                 .buttonStyle(.icon)
                 .help("Rename or Recolor Group")
                 .popover(isPresented: isEditing, arrowEdge: .trailing) {
-                    GroupEditor(model: model, group: group)
+                    GroupEditor(groups: groups, group: group, newNote: newNote)
                 }
         }
         .buttonStyle(.borderless)
@@ -54,30 +55,31 @@ struct GroupHeader: View {
         .padding(.vertical, 3)
         .contentShape(Rectangle())
         .contextMenu {
-            Button("New Note in Group") { model.newNote(inGroup: group.id) }
-            Button("Rename or Recolor…") { model.editingGroup = group.id }
-            Button(group.isPinned ? "Unpin Group" : "Pin Group to Top") { model.setGroupPinned(group.id, !group.isPinned) }
+            Button("New Note in Group") { newNote(group.id) }
+            Button("Rename or Recolor…") { groups.editing = group.id }
+            Button(group.isPinned ? "Unpin Group" : "Pin Group to Top") { groups.setPinned(group.id, !group.isPinned) }
             Divider()
-            Button("Ungroup") { model.ungroup(group.id) }
+            Button("Ungroup") { groups.ungroup(group.id) }
         }
     }
 }
 
 struct GroupEditor: View {
-    let model: AppModel
+    let groups: GroupsModel
     let group: NoteGroup
+    let newNote: (NoteGroup.ID) -> Void
     @FocusState private var isNameFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            TextField("Group Name", text: Binding(get: { group.name }, set: { model.renameGroup(group.id, $0) }))
+            TextField("Group Name", text: Binding(get: { group.name }, set: { groups.rename(group.id, to: $0) }))
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 13))
                 .focused($isNameFocused)
-                .onSubmit { model.editingGroup = nil }
+                .onSubmit { groups.editing = nil }
             HStack(spacing: 4) {
                 ForEach(GroupColor.allCases, id: \.self) { color in
-                    Button { model.setGroupColor(group.id, color) } label: {
+                    Button { groups.setColor(group.id, color) } label: {
                         Circle()
                             .fill(color.color)
                             .frame(width: 18, height: 18)
@@ -92,13 +94,13 @@ struct GroupEditor: View {
             }
             Divider()
             menuButton("plus", "New Note in Group") {
-                model.editingGroup = nil
-                model.newNote(inGroup: group.id)
+                groups.editing = nil
+                newNote(group.id)
             }
             menuButton(group.isPinned ? "pin.slash" : "pin", group.isPinned ? "Unpin Group" : "Pin Group to Top") {
-                model.setGroupPinned(group.id, !group.isPinned)
+                groups.setPinned(group.id, !group.isPinned)
             }
-            menuButton("square.dashed", "Ungroup") { model.ungroup(group.id) }
+            menuButton("square.dashed", "Ungroup") { groups.ungroup(group.id) }
         }
         .frame(width: 270)
         .padding(14)

@@ -1,5 +1,7 @@
 # Hardydo Notes
 
+[![CI](https://github.com/hardydo/hardydo-notes-app/actions/workflows/ci.yml/badge.svg)](https://github.com/hardydo/hardydo-notes-app/actions/workflows/ci.yml)
+
 A fast, local-first note app for macOS, built with SwiftUI and AppKit.
 
 - Markdown editor with live styling, a GitHub-style preview and a split view
@@ -11,15 +13,19 @@ A fast, local-first note app for macOS, built with SwiftUI and AppKit.
 
 ## Requirements
 
-macOS 15 or later and Swift 6 (the Command Line Tools are enough; Xcode is not needed).
+macOS 15 or later and Swift 6.2 or later (the Command Line Tools are enough; Xcode is not needed).
 
 ## Build
 
 ```bash
 ./scripts/build-app.sh            # builds dist/Hardydo Notes.app
 ./scripts/build-app.sh --install  # also moves it to ~/Applications
-swift run HardydoNotesChecks      # runs the checks
+./scripts/test.sh                 # runs the tests (swift test, plus a fix for the Command Line Tools)
 ```
+
+[`docs/hardydo-notes-guide.md`](docs/hardydo-notes-guide.md) is the user guide (in Vietnamese): features, shortcuts,
+where notes are stored, how to restore a backup, and the source layout. [`Tools/probes`](Tools/probes) drives the
+real app in a hidden window to measure speed and check drag and drop, saving and tab sessions.
 
 ## License
 

@@ -1,16 +1,6 @@
 import HardydoNotesCore
 import SwiftUI
 
-enum ReorderDrop: Equatable {
-    /// `upper` is the upper half of a gap whose halves land differently, such as the end of a sidebar group.
-    case slot(Int, upper: Bool)
-    case into(UUID)
-
-    var index: Int? {
-        if case .slot(let index, _) = self { index } else { nil }
-    }
-}
-
 /// Where a lifted row would land: how far from where it started, and the lane (a sidebar group) it would join.
 struct ReorderLanding: Equatable {
     let offset: CGFloat
@@ -75,9 +65,6 @@ final class ReorderSession {
     @ObservationIgnored private var settling: Drag?
 
     private static let startDistance: CGFloat = 4
-    private static let hysteresis: CGFloat = 16
-    /// How far past a two-halved gap's middle the pointer must go before the drop switches halves.
-    private static let halfMargin: CGFloat = 4
     private static let settle = Animation.easeOut(duration: 0.2)
     /// Within this distance of the list's edge a dragged row scrolls the list, faster the closer it gets.
     private static let scrollEdge: CGFloat = 24
@@ -92,12 +79,12 @@ final class ReorderSession {
 
     private struct Drag {
         let plan: ReorderPlan
-        let geometry: ReorderGeometry
+        var tracker: ReorderTracker
         let scrollStart: CGFloat
-        var drop: ReorderDrop
-        var anchor: CGFloat = 0
         var pointer: CGFloat = 0
         var location: CGFloat = 0
+
+        var geometry: ReorderGeometry { tracker.geometry }
     }
 
     init(axis: Axis, space: String) {
@@ -133,7 +120,7 @@ final class ReorderSession {
             }
             drag = started
             setLifted(plan.block)
-            landing = Self.landing(started.drop, in: started, keeping: nil)
+            landing = Self.landing(in: started, keeping: nil)
             watchScrolling()
         }
         drag?.pointer = axis == .vertical ? translation.height : translation.width
@@ -150,7 +137,7 @@ final class ReorderSession {
         stopScrolling()
         settling = drag
         withAnimation(Self.settle) {
-            switch drag.drop {
+            switch drag.tracker.drop {
             case .slot:
                 setTranslation(landing?.offset ?? 0)
             case .into(let group):
@@ -188,7 +175,7 @@ final class ReorderSession {
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            drag.plan.commit(drag.drop)
+            drag.plan.commit(drag.tracker.drop)
             setTranslation(0)
             setShifts([:])
             setDropTarget(nil)
@@ -226,7 +213,8 @@ final class ReorderSession {
             leads[id] = position
         }
         guard let geometry = ReorderGeometry(rows: plan.rows, block: plan.block, leads: leads, lengths: lengths) else { return nil }
-        return Drag(plan: plan, geometry: geometry, scrollStart: scrollOffset, drop: .slot(geometry.startIndex, upper: plan.startsUpper))
+        let tracker = ReorderTracker(geometry: geometry, start: .slot(geometry.startIndex, upper: plan.startsUpper), into: plan.into, isSlot: plan.isSlot)
+        return Drag(plan: plan, tracker: tracker, scrollStart: scrollOffset)
     }
 
     // The pointer stays put while the list scrolls under it, so the lifted row moves by however far the list has scrolled.
@@ -294,75 +282,21 @@ final class ReorderSession {
         scrollView.reflectScrolledClipView(clip)
     }
 
-    /*
-     The row stops at the list's ends but the drop follows the pointer past them: the gap after a group that ends
-     the list has a lower half only a pointer beyond the clamped row can reach.
-     */
+    // The row stops at the list's ends, while the tracker follows the pointer past them.
     private func move(_ value: CGFloat) {
         guard var drag else { return }
         setTranslation(drag.geometry.clamped(value))
-        let center = drag.geometry.blockLead + value + drag.geometry.blockLength / 2
-        guard let next = drop(at: center, moved: value, in: drag), next != drag.drop else { return }
-        var nextShifts = shifts
-        if let index = next.index, index != drag.drop.index {
-            nextShifts = drag.geometry.shifts(forGapAt: index)
-            guard !movesAway(nextShifts, before: center, in: drag) else { return }
-            drag.anchor = value
-        }
-        drag.drop = next
+        guard drag.tracker.move(to: value) else { return }
         self.drag = drag
         withAnimation(Self.settle) {
-            setShifts(nextShifts)
-            if case .into(let group) = next { setDropTarget(group) } else { setDropTarget(nil) }
-            landing = Self.landing(next, in: drag, keeping: landing)
+            setShifts(drag.tracker.shifts)
+            if case .into(let group) = drag.tracker.drop { setDropTarget(group) } else { setDropTarget(nil) }
+            landing = Self.landing(in: drag, keeping: landing)
         }
     }
 
-    private func drop(at center: CGFloat, moved value: CGFloat, in drag: Drag) -> ReorderDrop? {
-        let plan = drag.plan
-        if let group = plan.into.first(where: { isOver($0, at: center, in: drag) }) { return .into(group) }
-        let index: Int
-        if let current = drag.drop.index, abs(value - drag.anchor) < Self.hysteresis {
-            index = current
-        } else {
-            guard let nearest = drag.geometry.nearestSlot(to: center, where: { plan.isSlot($0, false) || plan.isSlot($0, true) })
-            else { return nil }
-            index = nearest
-        }
-        switch (plan.isSlot(index, false), plan.isSlot(index, true)) {
-        case (true, false): return .slot(index, upper: false)
-        case (false, true): return .slot(index, upper: true)
-        case (false, false): return drag.drop
-        case (true, true):
-            let offset = center - drag.geometry.slotCenter(index)
-            if case .slot(index, let upper) = drag.drop, abs(offset) <= Self.halfMargin { return .slot(index, upper: upper) }
-            return .slot(index, upper: offset < 0)
-        }
-    }
-
-    // A collapsed group's header must not slide out from under a note heading for it before the note can be dropped on it.
-    private func movesAway(_ next: [UUID: CGFloat], before center: CGFloat, in drag: Drag) -> Bool {
-        drag.plan.into.contains { id in
-            guard let lead = drag.geometry.leads[id], let length = drag.geometry.lengths[id] else { return false }
-            let now = shifts[id] ?? 0
-            let then = next[id] ?? 0
-            let top = lead + now
-            if then < now { return center <= top + length * 0.75 }
-            if then > now { return center >= top + length * 0.25 }
-            return false
-        }
-    }
-
-    // The middle half of a collapsed group's header takes the note in, as dropping on a closed folder does.
-    private func isOver(_ id: UUID, at center: CGFloat, in drag: Drag) -> Bool {
-        guard let lead = drag.geometry.leads[id], let length = drag.geometry.lengths[id] else { return false }
-        let top = lead + (shifts[id] ?? 0)
-        return center > top + length * 0.25 && center < top + length * 0.75
-    }
-
-    private static func landing(_ drop: ReorderDrop, in drag: Drag, keeping current: ReorderLanding?) -> ReorderLanding {
-        let offset = drop.index.map(drag.geometry.landingOffset) ?? current?.offset ?? 0
-        return ReorderLanding(offset: offset, lane: drag.plan.lane(drop))
+    private static func landing(in drag: Drag, keeping current: ReorderLanding?) -> ReorderLanding {
+        ReorderLanding(offset: drag.tracker.landingOffset(keeping: current?.offset), lane: drag.plan.lane(drag.tracker.drop))
     }
 
     private func setLifted(_ block: [UUID]) {

@@ -3,7 +3,8 @@ import SwiftUI
 
 /// VS Code's breadcrumbs: where the note lives, then the headings around the caret.
 struct BreadcrumbBar: View {
-    let model: AppModel
+    let workspace: WorkspaceEditor
+    let groups: GroupsModel
     let note: NoteSummary
     let revision: Int
     let language: ContentLanguage
@@ -41,7 +42,7 @@ struct BreadcrumbBar: View {
         .foregroundStyle(.secondary)
         .background(Color(nsColor: .textBackgroundColor))
         .onChange(of: OutlineSource(note: note.id, revision: revision, isMarkdown: language == .markdown), initial: true) { _, source in
-            outline.update(source) { model.store.note(note.id)?.body ?? "" }
+            outline.update(source) { workspace.note?.body ?? "" }
         }
     }
 
@@ -53,12 +54,12 @@ struct BreadcrumbBar: View {
             result.append(Segment(icon: "doc", text: note.title))
         } else {
             result = [Segment(text: AppInfo.name)]
-            if let group = model.groups.group(of: note.id) {
+            if let group = groups.list.group(of: note.id) {
                 result.append(Segment(text: group.displayName))
             }
             result.append(Segment(text: note.title))
         }
-        for heading in outline.path(atLine: model.editor.caretLine) {
+        for heading in outline.path(atLine: workspace.controller.caretLine) {
             result.append(Segment(icon: "textformat.abc", text: String(repeating: "#", count: heading.level) + " " + heading.title, isHeading: true))
         }
         return result

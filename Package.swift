@@ -16,6 +16,6 @@ let package = Package(
             ]
         ),
         .executableTarget(name: "HardydoNotes", dependencies: ["HardydoNotesCore"]),
-        .executableTarget(name: "HardydoNotesChecks", dependencies: ["HardydoNotesCore"]),
+        .testTarget(name: "HardydoNotesCoreTests", dependencies: ["HardydoNotesCore"]),
     ]
 )

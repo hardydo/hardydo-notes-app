@@ -10,7 +10,7 @@ struct EmptyWorkspace: View {
                 .frame(width: 60, height: 72)
             VStack(spacing: 0) {
                 shortcut("New Note", ["⌘", "N"]) { model.newNote() }
-                shortcut("Go to Note", ["⌘", "P"]) { model.showQuickOpen() }
+                shortcut("Go to Note", ["⌘", "P"]) { model.quickOpen.show() }
                 shortcut("Search All Notes", ["⇧", "⌘", "F"]) { model.openGlobalSearch() }
                 shortcut("Toggle Sidebar", ["⌘", "B"]) { model.toggleSidebar() }
                 shortcut("Open File", ["⌘", "O"]) { model.showOpenPanel() }

@@ -10,20 +10,19 @@ struct GlobalSearchInputs: Equatable {
 
 extension AppModel {
     var globalSearchInputs: GlobalSearchInputs {
-        GlobalSearchInputs(query: globalSearch.query, options: searchOptions, changeCount: store.changeCount)
+        GlobalSearchInputs(query: globalSearch.query, options: find.options, changeCount: store.changeCount)
     }
 
     func runGlobalSearch() async {
         let notes = store.notes.map {
             SearchableNote(id: $0.id, revision: store.revision(of: $0.id), title: $0.title, isFile: $0.localFile != nil, body: $0.body)
         }
-        await globalSearch.search(notes, options: searchOptions)
+        await globalSearch.search(notes, options: find.options)
     }
 
     func openGlobalSearch() {
-        editor.commit()
-        sidebarReorder.cancel()
-        fileReorder.cancel()
+        workspace.controller.commit()
+        sidebar.cancelDrags()
         globalSearch.isShown = true
         globalSearch.focusRequest += 1
     }
@@ -43,9 +42,10 @@ extension AppModel {
     func openResult(_ note: Note.ID, _ match: LineMatch) {
         find.query = globalSearch.query
         find.isShown = true
-        let editorShown = viewMode != .preview && selection == note && editor.textView != nil
-        leavePreview(to: .split)
-        selectNote(note)
+        let editor = workspace.controller
+        let editorShown = workspace.viewMode != .preview && tabs.selection == note && editor.textView != nil
+        workspace.leavePreview(to: .split)
+        tabs.open(note)
         find.current = match.range
         if editorShown {
             editor.reveal(match.range)

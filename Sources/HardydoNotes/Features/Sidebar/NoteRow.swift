@@ -45,11 +45,7 @@ struct NoteRow: View {
         .contentShape(Rectangle())
         .onHover { inside in
             hover.value = inside
-            if inside {
-                actions.model.noteUnderPointer = note.id
-            } else if actions.model.noteUnderPointer == note.id {
-                actions.model.noteUnderPointer = nil
-            }
+            actions.pointer(inside, at: note.id)
         }
         .contextMenu { NoteContextMenu(model: actions.model, note: note) }
     }
@@ -86,10 +82,19 @@ struct NoteRowActions {
     let focusList: () -> Void
 
     func select(_ id: Note.ID) {
-        model.selectNote(id)
+        model.tabs.open(id)
         focusList()
     }
 
-    func keep(_ id: Note.ID) { model.keepTab(id) }
+    func keep(_ id: Note.ID) { model.tabs.keep(id) }
     func remove(_ id: Note.ID) { model.requestDelete(id) }
+
+    func pointer(_ inside: Bool, at id: Note.ID) {
+        let sidebar = model.sidebar
+        if inside {
+            sidebar.noteUnderPointer = id
+        } else if sidebar.noteUnderPointer == id {
+            sidebar.noteUnderPointer = nil
+        }
+    }
 }
